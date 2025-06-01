@@ -10,13 +10,15 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
-using TMPro;                // pour TMP_InputField, TMP_Text
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using TMPro;                // pour TMP_InputField, TMP_Text
 using UnityEngine;
 using UnityEngine.Networking;
+using UnityEngine.UI;
 
 [assembly: CompilationRelaxations(8)]
 [assembly: RuntimeCompatibility(WrapNonExceptionThrows = true)]
@@ -278,12 +280,12 @@ namespace LakakaSpeaker
                 // Dans le Lobby Menu
                 MenuAPI.AddElementToLobbyMenu(parent =>
                 {
-                    MenuAPI.CreateREPOButton("Lakaka", CreateLakakaFolderMenu, parent, new Vector2(186f, 60f));
+                    MenuAPI.CreateREPOButton("Lakaka", CreateLakakaFolderMenu, parent, new Vector2(186f, 65f));
                 });
                 // Dans le Escape Menu
                 MenuAPI.AddElementToEscapeMenu(parent =>
                 {
-                    MenuAPI.CreateREPOButton("Lakaka", CreateLakakaFolderMenu, parent, new Vector2(160f, 86f));
+                    MenuAPI.CreateREPOButton("Lakaka", CreateLakakaFolderMenu, parent, new Vector2(178f, 86f));
                 });
             }
             catch (Exception ex)
@@ -291,27 +293,6 @@ namespace LakakaSpeaker
                 L.LogError($"[LakakaSpeaker] Impossible d'ajouter le bouton REPO “Lakaka” : {ex}");
             }
             // ─────────────────────────────────────────────────────────────────────────────────────────────────
-        }
-
-
-
-        private IEnumerator InitRoutine()
-        {
-            // 1) Charge les clips audio
-            yield return StartCoroutine(LoadAllClips());
-            L.LogInfo($"🔊 Loaded {clips.Count} audio clips.");
-
-            // 2) Patch Harmony maintenant que clips est prêt
-            ((Component)this).gameObject.transform.parent = null;
-            ((UnityEngine.Object)((Component)this).gameObject).hideFlags = (HideFlags)61;
-            var harmony = new Harmony(Info.Metadata.GUID);
-            harmony.PatchAll();
-            L.LogInfo("Harmony patches applied.");
-
-            // 3) Charge le bundle et enregistre les Valuables
-            LoadAssetBundle();
-            LoadValuablesFromResources();
-            L.LogInfo($"LakakaSpeaker v{Info.Metadata.Version} has loaded!");
         }
 
 
@@ -380,8 +361,8 @@ namespace LakakaSpeaker
             {
                 string fileName = Path.GetFileNameWithoutExtension(file);
 
-                // Si le fichier n’est pas “inclus”, on passe
-                if (!includedMusic.Contains(fileName))
+                // Ne charge que si la musique est activée dans la config
+                if (!GetMusicToggleValue(fileName))
                     continue;
 
                 using UnityWebRequest uwr = UnityWebRequestMultimedia.GetAudioClip("file://" + file, GetAudioType(file));
@@ -401,7 +382,7 @@ namespace LakakaSpeaker
             }
 
             if (clips.Count == 0)
-                L.LogWarning("No audio clips loaded (maybe none are included?).");
+                L.LogWarning("No audio clips loaded (maybe none are enabled?).");
         }
 
 
@@ -530,6 +511,36 @@ namespace LakakaSpeaker
 
             folderPage.scrollView.scrollSpeed = 3f;
 
+            REPOPopupPage rEPOPopupPage = folderPage;
+            Padding maskPadding = folderPage.maskPadding;
+            maskPadding.top = 35f;
+            rEPOPopupPage.maskPadding = maskPadding;
+
+            REPOPopupPage rEPOPopupPage2 = folderPage;
+
+            rEPOPopupPage2.onEscapePressed = (REPOPopupPage.ShouldCloseMenuDelegate)Delegate.Combine(rEPOPopupPage2.onEscapePressed, (REPOPopupPage.ShouldCloseMenuDelegate)delegate
+            {
+                if (hasPopupMenuOpened)
+                {
+                    return false;
+                }
+                if (changedEntryValues.Count == 0)
+                {
+                    return true;
+                }
+                MenuAPI.OpenPopup("Unsaved Changes", Color.red, "You have unsaved changes, are you sure you want to exit?", delegate
+                {
+                    folderPage.ClosePage(closePagesAddedOnTop: true);
+                    changedEntryValues.Clear();
+                    hasPopupMenuOpened = false;
+                }, delegate
+                {
+                    hasPopupMenuOpened = false;
+                });
+                hasPopupMenuOpened = true;
+                return false;
+            });
+
             // Liste locale pour les boutons de dossiers
             var localFolderButtons = new List<REPOButton>();
 
@@ -540,8 +551,7 @@ namespace LakakaSpeaker
                     string text = (string.IsNullOrEmpty(s) ? null : s.ToLower().Trim());
                     foreach (REPOButton btn in localFolderButtons)
                     {
-                        btn.repoScrollViewElement.visibility =
-                            (text == null || btn.labelTMP.text.ToLower().Contains(text));
+                        btn.repoScrollViewElement.visibility = text == null || btn.labelTMP.text.ToLower().Contains(text);
                     }
                     folderPage.scrollView.SetScrollPosition(0f);
                 }, parent, new Vector2(83f, 272f)).transform.localScale = Vector3.one * 0.95f;
@@ -586,15 +596,17 @@ namespace LakakaSpeaker
             foreach (KeyValuePair<string, ConfigEntryBase[]> folderConfigEntry in GetFolderEntries())
             {
                 string folderName = folderConfigEntry.Key;
+                string simplifiedFolderName = Path.GetFileName(folderName);
                 ConfigEntryBase[] configEntryBases = folderConfigEntry.Value;
                 folderPage.AddElementToScrollView(delegate (Transform parent)
                 {
-                    REPOButton folderButton = MenuAPI.CreateREPOButton(folderName, null, parent);
+                    REPOButton folderButton = MenuAPI.CreateREPOButton(simplifiedFolderName, null, parent);
                     folderButton.labelTMP.fontStyle = FontStyles.Normal;
                     if (folderName.Length > 24)
                     {
                         REPOButton rEPOButton = folderButton;
                         Vector2 labelSize = folderButton.GetLabelSize();
+                        labelSize.x = 250f;
                         rEPOButton.overrideButtonSize = labelSize;
                         REPOTextScroller rEPOTextScroller = ((Component)(object)folderButton.labelTMP).gameObject.AddComponent<REPOTextScroller>();
                         rEPOTextScroller.maxCharacters = 24;
@@ -627,26 +639,28 @@ namespace LakakaSpeaker
                     return folderButton.rectTransform;
                     void OpenPage()
                     {
+                        var musicFolderButtons = new List<REPOButton>();
                         MenuAPI.CloseAllPagesAddedOnTop();
                         string simplifiedFolderName = Path.GetFileName(folderName);
-                        REPOPopupPage folderPage = MenuAPI.CreateREPOPopupPage(folderName, REPOPopupPage.PresetSide.Right, shouldCachePage: false, pageDimmerVisibility: false, 5f);
+                        REPOPopupPage folderPage = MenuAPI.CreateREPOPopupPage(simplifiedFolderName, REPOPopupPage.PresetSide.Right, shouldCachePage: false, pageDimmerVisibility: false, 5f);
                         folderPage.scrollView.scrollSpeed = 3f;
                         folderPage.onEscapePressed = () => !hasPopupMenuOpened && changedEntryValues.Count == 0;
                         folderPage.AddElement(delegate (Transform mainPageParent)
                         {
                             MenuAPI.CreateREPOButton("Save Changes", delegate
                             {
-                                KeyValuePair<ConfigEntryBase, object>[] array2 = changedEntryValues.ToArray();
-                                changedEntryValues.Clear();
-                                KeyValuePair<ConfigEntryBase, object>[] array3 = array2;
-                                for (int i = 0; i < array3.Length; i++)
+                                foreach (var kvp in changedEntryValues.ToArray())
                                 {
-                                    KeyValuePair<ConfigEntryBase, object> keyValuePair2 = array3[i];
-                                    ConfigEntryBase configEntryBase2 = keyValuePair2.Key;
-                                    object obj2 = keyValuePair2.Value;
-                                    object value = (configEntryBase2.BoxedValue = obj2);
-                                    originalEntryValues[configEntryBase2] = value;
+                                    var configEntry = kvp.Key as ConfigEntry<bool>;
+                                    if (configEntry != null)
+                                    {
+                                        bool newValue = (bool)kvp.Value;
+                                        configEntry.Value = newValue;
+                                        originalEntryValues[configEntry] = newValue;
+                                    }
                                 }
+                                changedEntryValues.Clear();
+                                Instance.RefreshClips(); // Recharge les musiques selon la nouvelle config
                             }, mainPageParent, new Vector2(370f, 18f));
                         });
                         folderPage.AddElement(delegate (Transform mainPageParent)
@@ -660,21 +674,40 @@ namespace LakakaSpeaker
                                 }
                             }, mainPageParent, new Vector2(585f, 18f));
                         });
+
                         folderPage.AddElementToScrollView(delegate (Transform scrollView)
                         {
                             REPOButton rEPOButton2 = MenuAPI.CreateREPOButton("Reset To Default", delegate
                             {
-                                MenuAPI.OpenPopup("Reset " + folderName + "'" + (folderName.ToLower().EndsWith('s') ? string.Empty : "s") + " settings?", Color.red, "Are you sure you want to reset all settings back to default?", ResetToDefault);
+                                MenuAPI.OpenPopup("Reset " + Path.GetFileName(folderName) + "'" + (Path.GetFileName(folderName).ToLower().EndsWith('s') ? string.Empty : "s") + " settings?", Color.red, "Are you sure you want to reset all settings back to default?", ResetToDefault);
                             }, scrollView);
                             rEPOButton2.rectTransform.localPosition = new Vector2((folderPage.maskRectTransform.rect.width - rEPOButton2.GetLabelSize().x) * 0.5f, 0f);
                             return rEPOButton2.rectTransform;
                         });
+
+                        folderPage.AddElementToScrollView(delegate (Transform scrollView)
+                        {
+                            var inputField = MenuAPI.CreateREPOInputField("Music Search", delegate (string s)
+                            {
+                                string text = (string.IsNullOrEmpty(s) ? null : s.ToLower().Trim());
+                                foreach (REPOButton btn in musicFolderButtons)
+                                {
+                                    btn.repoScrollViewElement.visibility = text == null || btn.labelTMP.text.ToLower().Contains(text);
+                                }
+                                folderPage.scrollView.SetScrollPosition(0f);
+                            }, scrollView, new Vector2(5f, 272f));
+                            inputField.transform.localScale = Vector3.one * 0.95f;
+                            return inputField.GetComponent<RectTransform>();
+                        });
+
                         folderPage.AddElementToScrollView(delegate (Transform scrollView)
                         {
                             Vector2 size = new Vector2(0f, 10f);
                             return MenuAPI.CreateREPOSpacer(scrollView, default(Vector2), size).rectTransform;
                         });
-                        CreateFolderEntries(folderPage, configEntryBases);
+
+                        CreateMusicFolderButton(folderPage, folderName, musicFolderButtons);
+                        
                         folderPage.OpenPage(openOnTop: true);
                         lastClickedfolderButton = folderButton;
                     }
@@ -693,211 +726,107 @@ namespace LakakaSpeaker
             }
         }
 
-        private static void CreateFolderEntries(REPOPopupPage folderPage, ConfigEntryBase[] configEntryBases)
+        private static void CreateMusicFolderButton(REPOPopupPage folderPage, string folderPath, List<REPOButton> musicFolderButtons)
         {
-            foreach (IGrouping<string, ConfigEntryBase> group in from configEntryBase2 in configEntryBases
-                                                                 group configEntryBase2 by configEntryBase2.Definition.Section)
+            musicFolderButtons.Clear();
+
+            var files = Directory.GetFiles(folderPath, "*.mp3")
+                .Concat(Directory.GetFiles(folderPath, "*.wav"))
+                .Concat(Directory.GetFiles(folderPath, "*.ogg"))
+                .Concat(Directory.GetFiles(folderPath, "*.aiff"))
+                .ToArray();
+
+            foreach (var file in files)
             {
-                folderPage.AddElementToScrollView(delegate (Transform scrollView)
+                string fileName = Path.GetFileNameWithoutExtension(file);
+
+                // Récupérer ou créer la config pour ce fichier
+                if (!Instance.musicToggles.TryGetValue(fileName, out var configEntry))
                 {
-                    REPOLabel rEPOLabel = MenuAPI.CreateREPOLabel((group.Key), scrollView);
-                    rEPOLabel.labelTMP.fontStyle = FontStyles.Bold;
-                    return rEPOLabel.rectTransform;
-                });
-                foreach (ConfigEntryBase entry in group)
-                {
-                    string folderName = (entry.Definition.Key);
-                    originalEntryValues.Remove(entry);
-                    originalEntryValues.Add(entry, entry.BoxedValue);
-                    ConfigEntryBase configEntryBase = entry;
-                    if (!(configEntryBase is ConfigEntry<bool>))
-                    {
-                        if (!(configEntryBase is ConfigEntry<float>))
-                        {
-                            if (!(configEntryBase is ConfigEntry<int>))
-                            {
-                                if (!(configEntryBase is ConfigEntry<string>))
-                                {
-                                    if (configEntryBase == null || !entry.SettingType.IsSubclassOf(typeof(Enum)))
-                                    {
-                                        continue;
-                                    }
-                                    Type enumType = entry.SettingType;
-                                    string[] values = Enum.GetNames(enumType);
-                                    folderPage.AddElementToScrollView(delegate (Transform scrollView)
-                                    {
-                                        REPOSlider rEPOSlider = MenuAPI.CreateREPOSlider(folderName, string.Empty, delegate (int i)
-                                        {
-                                            object obj = Enum.Parse(enumType, values[i]);
-                                            if (originalEntryValues.TryGetValue(entry, out var value) && obj == value)
-                                            {
-                                                changedEntryValues.Remove(entry);
-                                            }
-                                            else
-                                            {
-                                                changedEntryValues[entry] = obj;
-                                            }
-                                        }, scrollView, values, entry.BoxedValue.ToString());
-                                        TextMeshProUGUI descriptionTMP = rEPOSlider.descriptionTMP;
-                                        FontStyles fontStyle = (rEPOSlider.labelTMP.fontStyle = FontStyles.Normal);
-                                        descriptionTMP.fontStyle = fontStyle;
-                                        return rEPOSlider.rectTransform;
-                                    });
-                                    continue;
-                                }
-                                AcceptableValueBase acceptableValues = entry.Description.AcceptableValues;
-                                AcceptableValueList<string> acceptableValueList = acceptableValues as AcceptableValueList<string>;
-                                if (acceptableValueList != null)
-                                {
-                                    folderPage.AddElementToScrollView(delegate (Transform scrollView)
-                                    {
-                                        REPOSlider rEPOSlider = MenuAPI.CreateREPOSlider(folderName, string.Empty, delegate (string s)
-                                        {
-                                            if (originalEntryValues.TryGetValue(entry, out var value) && s == (string)value)
-                                            {
-                                                changedEntryValues.Remove(entry);
-                                            }
-                                            else
-                                            {
-                                                changedEntryValues[entry] = s;
-                                            }
-                                        }, scrollView, acceptableValueList.AcceptableValues, (string)entry.BoxedValue);
-                                        TextMeshProUGUI descriptionTMP = rEPOSlider.descriptionTMP;
-                                        FontStyles fontStyle = (rEPOSlider.labelTMP.fontStyle = FontStyles.Normal);
-                                        descriptionTMP.fontStyle = fontStyle;
-                                        return rEPOSlider.rectTransform;
-                                    });
-                                    continue;
-                                }
-                                folderPage.AddElementToScrollView(delegate (Transform scrollView)
-                                {
-                                    string text = (string)entry.DefaultValue;
-                                    REPOInputField rEPOInputField = MenuAPI.CreateREPOInputField(folderName, delegate (string s)
-                                    {
-                                        if (originalEntryValues.TryGetValue(entry, out var value) && s == (string)value)
-                                        {
-                                            changedEntryValues.Remove(entry);
-                                        }
-                                        else
-                                        {
-                                            changedEntryValues[entry] = s;
-                                        }
-                                    }, scrollView, Vector2.zero, onlyNotifyOnSubmit: false, (!string.IsNullOrEmpty(text)) ? text : "<NONE>", (string)entry.BoxedValue);
-                                    TextMeshProUGUI labelTMP = rEPOInputField.labelTMP;
-                                    FontStyles fontStyle = (rEPOInputField.inputStringSystem.inputTMP.fontStyle = FontStyles.Normal);
-                                    labelTMP.fontStyle = fontStyle;
-                                    return rEPOInputField.rectTransform;
-                                });
-                                continue;
-                            }
-                            folderPage.AddElementToScrollView(delegate (Transform scrollView)
-                            {
-                                int num;
-                                int num2;
-                                int num4;
-                                if (entry.Description.AcceptableValues is AcceptableValueRange<int> acceptableValueRange)
-                                {
-                                    num = acceptableValueRange.MinValue;
-                                    num2 = acceptableValueRange.MaxValue;
-                                }
-                                else
-                                {
-                                    int num3 = Math.Abs((int)entry.BoxedValue);
-                                    num4 = ((num3 > 100) ? (-(num2 = num3 * 2)) : ((num3 != 0) ? (-(num2 = num3 * 3)) : (-(num2 = 100))));
-                                    num = num4;
-                                }
-                                string text = folderName;
-                                string empty = string.Empty;
-                                Action<int> onValueChanged = delegate (int i)
-                                {
-                                    if (originalEntryValues.TryGetValue(entry, out var value) && i == (int)value)
-                                    {
-                                        changedEntryValues.Remove(entry);
-                                    }
-                                    else
-                                    {
-                                        changedEntryValues[entry] = i;
-                                    }
-                                };
-                                num4 = (int)entry.BoxedValue;
-                                int min = num;
-                                int max = num2;
-                                REPOSlider rEPOSlider = MenuAPI.CreateREPOSlider(text, empty, onValueChanged, scrollView, default(Vector2), min, max, num4);
-                                TextMeshProUGUI descriptionTMP = rEPOSlider.descriptionTMP;
-                                FontStyles fontStyle = (rEPOSlider.labelTMP.fontStyle = FontStyles.Normal);
-                                descriptionTMP.fontStyle = fontStyle;
-                                return rEPOSlider.rectTransform;
-                            });
-                            continue;
-                        }
-                        folderPage.AddElementToScrollView(delegate (Transform scrollView)
-                        {
-                            int num = 2;
-                            float num2;
-                            float num3;
-                            if (entry.Description.AcceptableValues is AcceptableValueRange<float> acceptableValueRange)
-                            {
-                                num2 = acceptableValueRange.MinValue;
-                                num3 = acceptableValueRange.MaxValue;
-                                num = 1;
-                            }
-                            else
-                            {
-                                float num4 = Math.Abs((float)entry.BoxedValue);
-                                num2 = ((num4 == 0f) ? (0f - (num3 = 100f)) : (((double)num4 <= 0.001) ? (0f - (num3 = 10f)) : (((double)num4 <= 0.01) ? (0f - (num3 = 50f)) : ((!(num4 <= 100f)) ? (0f - (num3 = num4 * 2f)) : (0f - (num3 = num4 * 3f))))));
-                            }
-                            string text = folderName;
-                            string empty = string.Empty;
-                            Action<float> onValueChanged = delegate (float f)
-                            {
-                                if (originalEntryValues.TryGetValue(entry, out var value) && Math.Abs(f - (float)value) < float.Epsilon)
-                                {
-                                    changedEntryValues.Remove(entry);
-                                }
-                                else
-                                {
-                                    changedEntryValues[entry] = f;
-                                }
-                            };
-                            float defaultValue = (float)entry.BoxedValue;
-                            float min = num2;
-                            float max = num3;
-                            int precision = num;
-                            REPOSlider rEPOSlider = MenuAPI.CreateREPOSlider(text, empty, onValueChanged, scrollView, default(Vector2), min, max, precision, defaultValue);
-                            TextMeshProUGUI descriptionTMP = rEPOSlider.descriptionTMP;
-                            FontStyles fontStyle = (rEPOSlider.labelTMP.fontStyle = FontStyles.Normal);
-                            descriptionTMP.fontStyle = fontStyle;
-                            return rEPOSlider.rectTransform;
-                        });
-                        continue;
-                    }
-                    folderPage.AddElementToScrollView(delegate (Transform scrollView)
-                    {
-                        string text = folderName;
-                        Action<bool> onToggle = delegate (bool b)
-                        {
-                            if (originalEntryValues.TryGetValue(entry, out var value) && b == (bool)value)
-                            {
-                                changedEntryValues.Remove(entry);
-                            }
-                            else
-                            {
-                                changedEntryValues[entry] = b;
-                            }
-                        };
-                        bool defaultValue = (bool)entry.BoxedValue;
-                        REPOToggle rEPOToggle = MenuAPI.CreateREPOToggle(text, onToggle, scrollView, default(Vector2), "Enabled", "Disabled", defaultValue);
-                        rEPOToggle.labelTMP.fontStyle = FontStyles.Normal;
-                        return rEPOToggle.rectTransform;
-                    });
+                    Instance.GetMusicToggleValue(fileName);
+                    configEntry = Instance.musicToggles[fileName];
                 }
-                folderPage.AddElementToScrollView(delegate (Transform scrollView)
+
+                // Valeur originale et valeur modifiée (si présente)
+                bool originalValue = configEntry.Value;
+                bool currentValue = originalValue;
+                if (changedEntryValues.TryGetValue(configEntry, out var changedObj) && changedObj is bool changedVal)
+                    currentValue = changedVal;
+
+                string color = currentValue ? "green" : "red";
+                string label = $"<color={color}>{fileName}</color>";
+
+                folderPage.AddElementToScrollView(delegate (Transform parent)
                 {
-                    Vector2 size = new Vector2(0f, 20f);
-                    return MenuAPI.CreateREPOSpacer(scrollView, default(Vector2), size).rectTransform;
+                    REPOButton fileButton = MenuAPI.CreateREPOButton(label, null, parent);
+                    fileButton.labelTMP.fontStyle = FontStyles.Normal;
+                    fileButton.labelTMP.richText = true;
+                    fileButton.name = fileName;
+
+                    if (fileName.Length > 24)
+                    {
+                        Vector2 labelSize = fileButton.GetLabelSize();
+                        labelSize.x = 250f;
+                        fileButton.overrideButtonSize = labelSize;
+                        REPOTextScroller rEPOTextScroller = fileButton.labelTMP.gameObject.AddComponent<REPOTextScroller>();
+                        rEPOTextScroller.maxCharacters = 24;
+                        MenuManager.instance.StartCoroutine(rEPOTextScroller.Animate());
+                    }
+
+                    // Clic sur le bouton : modifie la valeur dans changedEntryValues et le label
+                    fileButton.onClick = () =>
+                    {
+                        bool current = originalValue;
+                        if (changedEntryValues.TryGetValue(configEntry, out var changedObj2) && changedObj2 is bool changedVal2)
+                            current = changedVal2;
+
+                        bool newValue = !current;
+                        changedEntryValues[configEntry] = newValue;
+
+                        fileButton.labelTMP.text = $"<color={(newValue ? "green" : "red")}>{fileName}</color>";
+                    };
+
+                    musicFolderButtons.Add(fileButton);
+                    return fileButton.rectTransform;
                 });
             }
         }
+
+        private static Dictionary<string, ConfigEntryBase[]> GetMusicConfigEntries()
+        {
+            Dictionary<string, ConfigEntryBase[]> dictionary = new Dictionary<string, ConfigEntryBase[]>();
+            foreach (var entry in Instance.musicFolders)
+            {
+                List<ConfigEntryBase> list = new List<ConfigEntryBase>();
+                foreach (var file in Directory.GetFiles(entry, "*.mp3")
+                                            .Concat(Directory.GetFiles(entry, "*.wav"))
+                                            .Concat(Directory.GetFiles(entry, "*.ogg"))
+                                            .Concat(Directory.GetFiles(entry, "*.aiff")))
+                {
+                    string fileName = Path.GetFileNameWithoutExtension(file);
+                    string safeFileName = Instance.SanitizeConfigKey(fileName);
+                    ConfigDefinition configDef = new ConfigDefinition("Music Folder", safeFileName);
+                    ConfigEntryBase configEntry = Instance.Config.Bind<bool>(
+                        "Music Folder",
+                        safeFileName,
+                        true,
+                        new ConfigDescription(
+                            "Internal use.",
+                            null,
+                            new object[] { "HideREPOConfig" }
+                        )
+                    );
+                    list.Add(configEntry);
+                }
+                if (list.Count > 0)
+                {
+                    dictionary.TryAdd(entry, list.ToArray());
+                }
+
+            }
+            return dictionary;
+        }
+
 
         private static Dictionary<string, ConfigEntryBase[]> GetFolderEntries()
         {
@@ -946,6 +875,20 @@ namespace LakakaSpeaker
             // Utilise StandaloneFileBrowser ou un équivalent pour ouvrir un folder picker natif
             // Après sélection, ajoute le chemin à Instance.musicFolders, puis Instance.SaveMusicFolders()
         }
+
+        private static int GetDecimalPlaces(float value)
+        {
+            string text = value.ToString(CultureInfo.InvariantCulture);
+            int num = text.IndexOf('.');
+            if (num != -1)
+            {
+                string text2 = text;
+                int num2 = num + 1;
+                return text2.Substring(num2, text2.Length - num2).Length;
+            }
+            return 0;
+        }
+
 
     }
 }
