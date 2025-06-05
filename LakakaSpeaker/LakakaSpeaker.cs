@@ -5,6 +5,7 @@ using HarmonyLib;
 using MenuLib;               // pour MenuAPI, REPOPopupPage, REPOButton, REPOInputField, etc.
 using MenuLib.MonoBehaviors; // pour accéder à MenuManager.instance.StartCoroutine(...)
 using MenuLib.Structs;      // pour la structure Padding
+using Photon.Pun;
 using REPOLib.Modules;
 using System;
 using System.Collections;
@@ -169,6 +170,17 @@ namespace LakakaSpeaker
         private static readonly Dictionary<ConfigEntryBase, object> originalEntryValues = new Dictionary<ConfigEntryBase, object>();
 
 
+        // ---- Partage client-serveur ----
+        private const int MaxChunkSize = 48000; // 48 Ko, bien en-dessous de la limite Photon (~0.5 Mo)
+        private class IncomingFile
+        {
+            public List<byte[]> Chunks = new List<byte[]>();
+            public int ExpectedChunks;
+            public int ReceivedChunks;
+        }
+        private Dictionary<string, IncomingFile> incomingFiles = new Dictionary<string, IncomingFile>();
+        // ----------------------------------
+
 
 
         private void LoadMusicFolders()
@@ -267,8 +279,15 @@ namespace LakakaSpeaker
             LoadMusicFolders();
 
             // 3) Charge dès à présent tous les clips (mais UI ne sera pas encore visible)
-            StartCoroutine(LoadAllClips());
-
+            if (IsHost())
+            {
+                L.LogMessage("Loading all audio clips");
+                StartCoroutine(LoadAllClips());
+            }
+            else
+            {
+                L.LogMessage("Not loading audio clips, audio clips are loading on host only.");
+            }
             // ─── NOUVEAU POUR REPO “Lakaka” : on ajoute notre bouton “Lakaka” au menu principal ──────────────────
             try
             {
@@ -278,15 +297,15 @@ namespace LakakaSpeaker
                     MenuAPI.CreateREPOButton("Lakaka", CreateLakakaFolderMenu, parent, new Vector2(120f, 55.5f));
                 });
                 // Dans le Lobby Menu
-                MenuAPI.AddElementToLobbyMenu(parent =>
-                {
-                    MenuAPI.CreateREPOButton("Lakaka", CreateLakakaFolderMenu, parent, new Vector2(186f, 65f));
-                });
+                //MenuAPI.AddElementToLobbyMenu(parent =>
+                //{
+                //    MenuAPI.CreateREPOButton("Lakaka", CreateLakakaFolderMenuLobby, parent, new Vector2(186f, 65f));
+                //});
                 // Dans le Escape Menu
-                MenuAPI.AddElementToEscapeMenu(parent =>
-                {
-                    MenuAPI.CreateREPOButton("Lakaka", CreateLakakaFolderMenu, parent, new Vector2(178f, 86f));
-                });
+                //MenuAPI.AddElementToEscapeMenu(parent =>
+                //{
+                //    MenuAPI.CreateREPOButton("Lakaka", CreateLakakaFolderMenuGame, parent, new Vector2(178f, 86f));
+                //});
             }
             catch (Exception ex)
             {
@@ -887,6 +906,101 @@ namespace LakakaSpeaker
                 return text2.Substring(num2, text2.Length - num2).Length;
             }
             return 0;
+        }
+
+
+
+        // --------------------- Partie partage ---------------------------------
+
+        private bool IsHost()
+        {
+            return Photon.Pun.PhotonNetwork.IsMasterClient;
+        }
+
+        public void SendAllMusicFilesToClient(int targetActorNumber)
+        {
+            foreach (var file in Directory.GetFiles(musicDir, "*.*")
+                .Where(f => f.EndsWith(".mp3") || f.EndsWith(".wav") || f.EndsWith(".ogg") || f.EndsWith(".aiff")))
+            {
+                SendFileToClient(Path.GetFileName(file), File.ReadAllBytes(file), targetActorNumber);
+            }
+        }
+
+        private void SendFileToClient(string fileName, byte[] data, int targetActorNumber)
+        {
+            int totalChunks = (int)Math.Ceiling((double)data.Length / MaxChunkSize);
+            for (int i = 0; i < totalChunks; i++)
+            {
+                int chunkSize = Math.Min(MaxChunkSize, data.Length - i * MaxChunkSize);
+                byte[] chunk = new byte[chunkSize];
+                Array.Copy(data, i * MaxChunkSize, chunk, 0, chunkSize);
+
+                object[] content = new object[] { fileName, chunk, i, totalChunks };
+                Photon.Pun.PhotonView.Get(this).RPC("ReceiveMusicChunk", Photon.Pun.RpcTarget.Others, content);
+            }
+        }
+
+        [PunRPC]
+        public void ReceiveMusicChunk(string fileName, byte[] chunk, int chunkIndex, int totalChunks)
+        {
+            if (!incomingFiles.TryGetValue(fileName, out var incoming))
+            {
+                incoming = new IncomingFile { ExpectedChunks = totalChunks };
+                incomingFiles[fileName] = incoming;
+            }
+            // S'assure que la liste a la bonne taille
+            while (incoming.Chunks.Count < totalChunks)
+                incoming.Chunks.Add(null);
+
+            incoming.Chunks[chunkIndex] = chunk;
+            incoming.ReceivedChunks++;
+
+            if (incoming.ReceivedChunks == incoming.ExpectedChunks)
+            {
+                // Reconstituer le fichier
+                int totalLength = incoming.Chunks.Sum(c => c?.Length ?? 0);
+                byte[] fullData = new byte[totalLength];
+                int offset = 0;
+                foreach (var c in incoming.Chunks)
+                {
+                    if (c != null)
+                    {
+                        Buffer.BlockCopy(c, 0, fullData, offset, c.Length);
+                        offset += c.Length;
+                    }
+                }
+                // Sauvegarder dans un fichier temporaire
+                string tempPath = Path.Combine(Application.temporaryCachePath, fileName);
+                File.WriteAllBytes(tempPath, fullData);
+
+                // Charger et jouer le clip
+                StartCoroutine(PlayClipFromFile(tempPath));
+
+                incomingFiles.Remove(fileName);
+            }
+        }
+
+        private IEnumerator PlayClipFromFile(string path)
+        {
+            using (var uwr = UnityWebRequestMultimedia.GetAudioClip("file://" + path, GetAudioType(path)))
+            {
+                yield return uwr.SendWebRequest();
+                if (uwr.result == UnityWebRequest.Result.Success)
+                {
+                    var clip = DownloadHandlerAudioClip.GetContent(uwr);
+                    // Jouez le clip ici (par exemple, via un AudioSource)
+                }
+                else
+                {
+                    L.LogError($"Erreur lors du chargement du clip {path} : {uwr.error}");
+                }
+            }
+        }
+
+        public override void OnPlayerEnteredRoom(Photon.Realtime.Player newPlayer)
+        {
+            if (IsHost())
+                SendAllMusicFilesToClient(newPlayer.ActorNumber);
         }
 
 

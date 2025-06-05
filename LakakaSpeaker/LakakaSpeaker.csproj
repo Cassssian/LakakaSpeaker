@@ -31,6 +31,27 @@
     <Reference Include="PaintedUtils">
       <HintPath>D:\Mods Unity\R.E.P.O\dll\PaintedUtils.dll</HintPath>
     </Reference>
+    <Reference Include="PhotonChat">
+      <HintPath>dep\PhotonChat.dll</HintPath>
+    </Reference>
+    <Reference Include="PhotonRealtime">
+      <HintPath>dep\PhotonRealtime.dll</HintPath>
+    </Reference>
+    <Reference Include="PhotonUnityNetworking">
+      <HintPath>dep\PhotonUnityNetworking.dll</HintPath>
+    </Reference>
+    <Reference Include="PhotonUnityNetworking.Utilities">
+      <HintPath>dep\PhotonUnityNetworking.Utilities.dll</HintPath>
+    </Reference>
+    <Reference Include="PhotonVoice">
+      <HintPath>dep\PhotonVoice.dll</HintPath>
+    </Reference>
+    <Reference Include="PhotonVoice.API">
+      <HintPath>dep\PhotonVoice.API.dll</HintPath>
+    </Reference>
+    <Reference Include="PhotonVoice.PUN">
+      <HintPath>dep\PhotonVoice.PUN.dll</HintPath>
+    </Reference>
     <Reference Include="REPOConfig">
       <HintPath>..\..\..\..\AppData\Roaming\r2modmanPlus-local\REPO\profiles\Lka\BepInEx\plugins\nickklmao-REPOConfig\REPOConfig.dll</HintPath>
     </Reference>
