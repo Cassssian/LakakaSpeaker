@@ -1,11 +1,13 @@
 ﻿using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
+using ExitGames.Client.Photon;
 using HarmonyLib;
 using MenuLib;               // pour MenuAPI, REPOPopupPage, REPOButton, REPOInputField, etc.
 using MenuLib.MonoBehaviors; // pour accéder à MenuManager.instance.StartCoroutine(...)
 using MenuLib.Structs;      // pour la structure Padding
 using Photon.Pun;
+using Photon.Realtime;
 using REPOLib.Modules;
 using System;
 using System.Collections;
@@ -18,6 +20,7 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using TMPro;                // pour TMP_InputField, TMP_Text
 using UnityEngine;
+using UnityEngine.Events;
 using UnityEngine.Networking;
 using UnityEngine.UI;
 
@@ -118,11 +121,36 @@ namespace System.Runtime.CompilerServices
 
 namespace LakakaSpeaker
 {
+
+    [Serializable]
+    public class NcsTrack
+    {
+        public string id;
+        public string title;
+        public string artist;
+        public string previewUrl;   // URL du .mp3 (ou autre)  
+        public string coverUrl;
+        public int duration;
+        public string date;
+        public string[] genre;
+        public string[] tags;
+        public long listenCount;
+        public string youtubeUrl;
+        public string type;
+    }
+
+    // Wrapper pour JsonUtility
+    [Serializable]
+    public class NcsTrackList
+    {
+        public List<NcsTrack> tracks;
+    }
+
     [BepInPlugin("cassian.LakakaSpeaker", "LakakaSpeaker", "1.0.0")]
     [BepInDependency("PaintedThornStudios.PaintedUtils", BepInDependency.DependencyFlags.HardDependency)]
     [BepInDependency("REPOLib", BepInDependency.DependencyFlags.HardDependency)]
     [BepInDependency("nickklmao.menulib", BepInDependency.DependencyFlags.HardDependency)]
-    public class LakakaSpeaker : BaseUnityPlugin
+    public class LakakaSpeaker : BaseUnityPlugin, IInRoomCallbacks
     {
 
         public ManualLogSource L => Logger;
@@ -137,6 +165,7 @@ namespace LakakaSpeaker
         private bool _initialized = false;
         private string pluginDir;
         private string musicDir;
+        private static MenuButtonPopUp menuButtonPopup;
 
 
         /// <summary>
@@ -168,6 +197,16 @@ namespace LakakaSpeaker
         internal static REPOButton lastClickedfolderButton;
         private static bool hasPopupMenuOpened;
         private static readonly Dictionary<ConfigEntryBase, object> originalEntryValues = new Dictionary<ConfigEntryBase, object>();
+
+
+        /// <summary>
+        /// NCS URLs pour les musiques NCS (No Copyright Sounds).
+        /// </summary>
+        internal List<string> ncsUrls = new List<string>();
+        private ConfigEntry<bool> ncsTrackPlayEntry;
+        public bool IsNcsMode => ncsTrackPlayEntry?.Value ?? false;
+
+
 
 
         // ---- Partage client-serveur ----
@@ -239,11 +278,15 @@ namespace LakakaSpeaker
             return input;
         }
 
-
+        private void OnDestroy()
+        {
+            Photon.Pun.PhotonNetwork.RemoveCallbackTarget(this);
+        }
 
         private void Awake()
         {
             Instance = this;
+            Photon.Pun.PhotonNetwork.AddCallbackTarget(this);
 
             L.LogInfo("LakakaSpeaker initializing...");
 
@@ -278,11 +321,30 @@ namespace LakakaSpeaker
 
             LoadMusicFolders();
 
+            ncsTrackPlayEntry = Config.Bind(
+                "Mode NCS",
+                "Activer lecture NCS",
+                false,
+                new ConfigDescription(
+                    "Si activé, joue les musiques NCS aléatoires au lieu des musiques locales.",
+                    null,
+                    new object[] { "HideREPOConfig" }
+                )
+            );
+
             // 3) Charge dès à présent tous les clips (mais UI ne sera pas encore visible)
             if (IsHost())
             {
                 L.LogMessage("Loading all audio clips");
-                StartCoroutine(LoadAllClips());
+                if (ncsTrackPlayEntry.Value)
+                {
+                    string jsonUrl = "https://…/ncs_all_tracks.json"; // <-- à personnaliser
+                    StartCoroutine(LoadNcsUrlsOnly(jsonUrl));
+                }
+                else
+                {
+                    StartCoroutine(LoadAllClips());
+                }
             }
             else
             {
@@ -296,11 +358,11 @@ namespace LakakaSpeaker
                 {
                     MenuAPI.CreateREPOButton("Lakaka", CreateLakakaFolderMenu, parent, new Vector2(120f, 55.5f));
                 });
-                // Dans le Lobby Menu
-                //MenuAPI.AddElementToLobbyMenu(parent =>
-                //{
-                //    MenuAPI.CreateREPOButton("Lakaka", CreateLakakaFolderMenuLobby, parent, new Vector2(186f, 65f));
-                //});
+                //Dans le Lobby Menu
+                MenuAPI.AddElementToLobbyMenu(parent =>
+                {
+                    MenuAPI.CreateREPOButton("Lakaka", CreateLakakaFolderMenuLobby, parent, new Vector2(186f, 65f));
+                });
                 // Dans le Escape Menu
                 //MenuAPI.AddElementToEscapeMenu(parent =>
                 //{
@@ -312,6 +374,7 @@ namespace LakakaSpeaker
                 L.LogError($"[LakakaSpeaker] Impossible d'ajouter le bouton REPO “Lakaka” : {ex}");
             }
             // ─────────────────────────────────────────────────────────────────────────────────────────────────
+            L.LogInfo("LakakaSpeaker Awake terminé, prêt à envoyer les musiques aux clients.");
         }
 
 
@@ -497,7 +560,7 @@ namespace LakakaSpeaker
             {
                 _initialized = true;
 
-                // Détach & cache le GameObject-plugin
+                // Détache & cache le GameObject-plugin
                 ((Component)this).gameObject.transform.parent = null;
                 ((UnityEngine.Object)((Component)this).gameObject).hideFlags = HideFlags.HideAndDontSave;
 
@@ -514,8 +577,8 @@ namespace LakakaSpeaker
         }
 
 
+        // -------------------- Partie UI --------------------
 
-     
         private static void CreateLakakaFolderMenu()
         {
             if (Instance == null || MenuManager.instance == null)
@@ -606,6 +669,39 @@ namespace LakakaSpeaker
             folderPage.OpenPage(openOnTop: false);
         }
 
+        private static void CreateLakakaFolderMenuLobby()
+            {
+                OpenPopupCustom("LakakaSpeaker", Color.cyan, "Choose which settings you want to change", "Music played (Multi)", "Speaker's settings", delegate
+                    {
+                        //option 1 : Music played (Multi)
+                    }, delegate
+                    {
+                        //option 2 : Speaker's settings
+                    }
+                );
+            }
+
+        public static void OpenPopupCustom(string header, Color headerColor, string content, string Option1, string Option2, Action onLeftClicked, Action onRightClicked = null)
+        {
+            if (!menuButtonPopup)
+            {
+                menuButtonPopup = MenuManager.instance.gameObject.AddComponent<MenuButtonPopUp>();
+            }
+
+            menuButtonPopup.option1Event = new UnityEvent();
+            menuButtonPopup.option2Event = new UnityEvent();
+            if (onLeftClicked != null)
+            {
+                menuButtonPopup.option1Event.AddListener(onLeftClicked.Invoke);
+            }
+
+            if (onRightClicked != null)
+            {
+                menuButtonPopup.option2Event.AddListener(onRightClicked.Invoke);
+            }
+
+            MenuManager.instance.PagePopUpTwoOptions(menuButtonPopup, header, headerColor, content, Option1, Option2);
+        }
 
         private static void CreateFolderList(REPOPopupPage folderPage, List<REPOButton> folderButtons)
         {
@@ -908,6 +1004,85 @@ namespace LakakaSpeaker
             return 0;
         }
 
+        // ---------------------------------------------------
+
+
+        // ----------------------- Partie NCS -----------------------------------
+        private IEnumerator LoadNcsUrlsOnly(string jsonUrl)
+        {
+            using UnityWebRequest uwr = UnityWebRequest.Get(jsonUrl);
+            yield return uwr.SendWebRequest();
+
+            if (uwr.result != UnityWebRequest.Result.Success)
+            {
+                L.LogError($"Erreur téléchargement JSON NCS : {uwr.error}");
+                yield break;
+            }
+
+            // On entoure le JSON pour que JsonUtility sache désérialiser
+            string rawJson = uwr.downloadHandler.text;
+            string wrappedJson = "{\"tracks\":" + rawJson + "}";
+            NcsTrackList list = JsonUtility.FromJson<NcsTrackList>(wrappedJson);
+
+            if (list == null || list.tracks == null)
+            {
+                L.LogError("Parsing du JSON NCS a échoué ou liste vide.");
+                yield break;
+            }
+
+            L.LogInfo($"🔽 {list.tracks.Count} musiques NCS détectées dans le JSON.");
+
+            // On remplit uniquement la liste d’URLs (previewUrl)
+            foreach (var t in list.tracks)
+            {
+                if (!string.IsNullOrEmpty(t.previewUrl))
+                    ncsUrls.Add(t.previewUrl);
+            }
+
+            L.LogInfo($"✅ {ncsUrls.Count} URLs NCS stockées pour usage ultérieur.");
+        }
+
+        // Coroutine pour télécharger et jouer un seul clip depuis URL
+        public IEnumerator PlayOneRandomNcsClip(AudioSource src)
+        {
+            if (ncsUrls == null || ncsUrls.Count == 0)
+            {
+                L.LogWarning("Liste NCS vide : impossible de jouer un morceau aléatoire.");
+                yield break;
+            }
+
+            // Choix aléatoire d’une URL dans ncsUrls
+            string randomUrl = ncsUrls[UnityEngine.Random.Range(0, ncsUrls.Count)];
+            L.LogInfo($"🎧 Téléchargement à la volée depuis NCS : {randomUrl}");
+
+            using UnityWebRequest uwr = UnityWebRequestMultimedia.GetAudioClip(randomUrl, AudioType.MPEG);
+            yield return uwr.SendWebRequest();
+
+            if (uwr.result != UnityWebRequest.Result.Success)
+            {
+                L.LogError($"❌ Échec du téléchargement NCS : {uwr.error}");
+                yield break;
+            }
+
+            AudioClip clip = DownloadHandlerAudioClip.GetContent(uwr);
+            clip.name = Path.GetFileNameWithoutExtension(randomUrl);
+
+            // Affectation du clip et paramétrage
+            src.clip = clip;
+            src.volume = 0.8f;
+            src.loop = false;
+            L.LogInfo($"▶️ Lecture NCS aléatoire : {clip.name}");
+
+            // Jouer une fois le clip chargé
+            src.Play();
+
+            // Ajouter RandomMusicLooper pour enchaîner après la fin du clip
+            if (src.gameObject.GetComponent<RandomMusicLooper>() == null)
+            {
+                src.gameObject.AddComponent<RandomMusicLooper>();
+                L.LogInfo("🔁 RandomMusicLooper ajouté pour enchaîner NCS.");
+            }
+        }
 
 
         // --------------------- Partie partage ---------------------------------
@@ -917,18 +1092,21 @@ namespace LakakaSpeaker
             return Photon.Pun.PhotonNetwork.IsMasterClient;
         }
 
-        public void SendAllMusicFilesToClient(int targetActorNumber)
+        public IEnumerator SendAllMusicFilesToClient(int targetActorNumber)
         {
             foreach (var file in Directory.GetFiles(musicDir, "*.*")
                 .Where(f => f.EndsWith(".mp3") || f.EndsWith(".wav") || f.EndsWith(".ogg") || f.EndsWith(".aiff")))
             {
                 SendFileToClient(Path.GetFileName(file), File.ReadAllBytes(file), targetActorNumber);
+                yield return new WaitForSeconds(0.1f);
             }
         }
 
         private void SendFileToClient(string fileName, byte[] data, int targetActorNumber)
         {
             int totalChunks = (int)Math.Ceiling((double)data.Length / MaxChunkSize);
+            var target = PhotonNetwork.CurrentRoom.GetPlayer(targetActorNumber);
+            L.LogInfo($"Envoi du fichier {fileName} au client {targetActorNumber} ({data.Length} octets, {totalChunks} chunks)");
             for (int i = 0; i < totalChunks; i++)
             {
                 int chunkSize = Math.Min(MaxChunkSize, data.Length - i * MaxChunkSize);
@@ -936,7 +1114,7 @@ namespace LakakaSpeaker
                 Array.Copy(data, i * MaxChunkSize, chunk, 0, chunkSize);
 
                 object[] content = new object[] { fileName, chunk, i, totalChunks };
-                Photon.Pun.PhotonView.Get(this).RPC("ReceiveMusicChunk", Photon.Pun.RpcTarget.Others, content);
+                Photon.Pun.PhotonView.Get(this).RPC("ReceiveMusicChunk", target, content);
             }
         }
 
@@ -997,12 +1175,30 @@ namespace LakakaSpeaker
             }
         }
 
-        public override void OnPlayerEnteredRoom(Photon.Realtime.Player newPlayer)
+        public void OnPlayerEnteredRoom(Player newPlayer)
         {
+            L.LogInfo($"OnPlayerEnteredRoom appelé pour {newPlayer.NickName} (ActorNumber={newPlayer.ActorNumber})");
             if (IsHost())
-                SendAllMusicFilesToClient(newPlayer.ActorNumber);
+                StartCoroutine(SendAllMusicFilesToClient(newPlayer.ActorNumber));
         }
 
+        public void OnPlayerLeftRoom(Photon.Realtime.Player otherPlayer) { }
+        public void OnRoomPropertiesUpdate(ExitGames.Client.Photon.Hashtable propertiesThatChanged) { }
+        public void OnPlayerPropertiesUpdate(Player targetPlayer, ExitGames.Client.Photon.Hashtable changedProps) { }
+        public void OnMasterClientSwitched(Photon.Realtime.Player newMasterClient) { }
+
+        public void OnJoinedRoom()
+        {
+            L.LogInfo("OnJoinedRoom appelé (vous êtes dans la room Photon)");
+        }
+        public void OnCreatedRoom()
+        {
+            L.LogInfo("OnCreatedRoom appelé (room créée)");
+        }
+        public void OnLeftRoom()
+        {
+            L.LogInfo("OnLeftRoom appelé (room quittée)");
+        }
 
     }
 }

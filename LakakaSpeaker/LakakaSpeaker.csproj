@@ -31,6 +31,9 @@
     <Reference Include="PaintedUtils">
       <HintPath>D:\Mods Unity\R.E.P.O\dll\PaintedUtils.dll</HintPath>
     </Reference>
+    <Reference Include="Photon3Unity3D">
+      <HintPath>dep\Photon3Unity3D.dll</HintPath>
+    </Reference>
     <Reference Include="PhotonChat">
       <HintPath>dep\PhotonChat.dll</HintPath>
     </Reference>
@@ -72,6 +75,9 @@
     </Reference>
     <Reference Include="UnityEngine.CoreModule">
       <HintPath>E:\SteamLibrary\steamapps\common\REPO\REPO_Data\Managed\UnityEngine.CoreModule.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine.JSONSerializeModule">
+      <HintPath>dep\UnityEngine.JSONSerializeModule.dll</HintPath>
     </Reference>
     <Reference Include="UnityEngine.Networking">
       <HintPath>D:\Mods Unity\R.E.P.O\dll\UnityEngine.Networking.dll</HintPath>
