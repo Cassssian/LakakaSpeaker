@@ -1,12 +1,12 @@
-﻿using System;
-using HarmonyLib;
+﻿using HarmonyLib;
 using REPOLib.Modules;
+using System;
 using UnityEngine;
 
 namespace LakakaSpeaker
 {
     /// <summary>
-    /// MonoBehaviour that loops random music clips when current clip finishes.
+    /// MonoBehaviour qui boucle des musiques aléatoires quand le clip courant se termine (mode non-NCS).
     /// </summary>
     public class RandomMusicLooper : MonoBehaviour
     {
@@ -26,26 +26,19 @@ namespace LakakaSpeaker
             if (plugin == null)
                 return;
 
-            if (plugin.IsNcsMode)
+            var nextClip = plugin.GetRandomClip();
+            if (nextClip != null)
             {
-                plugin.StartCoroutine(plugin.PlayOneRandomNcsClip(_src));
-            }
-            else
-            {
-                var nextClip = plugin.GetRandomClip();
-                if (nextClip != null)
-                {
-                    _src.clip = nextClip;
-                    _src.Play();
-                }
+                _src.clip = nextClip;
+                _src.Play();
             }
         }
-
     }
 
     /// <summary>
-    /// Harmony patch that intercepts AudioSource.Play() on ValuableObject instances
-    /// to replace the clip with a random one and attach a looper.
+    /// Patch Harmony pour intercepter AudioSource.Play() sur les ValuableObject de type JBLSpeaker.
+    /// Gère deux modes : Non-NCS (boucle aléatoire), et NCS (looper séquentiel avec téléchargement).
+    /// Implémente un bypass pour que les Play internes du looper NCS passent sans être interceptés.
     /// </summary>
     [HarmonyPatch(typeof(AudioSource), nameof(AudioSource.Play), new Type[0])]
     public static class Patch_AudioSourcePlay_ForValuables
@@ -55,53 +48,92 @@ namespace LakakaSpeaker
             if (__instance == null)
                 return true;
 
-            // Ne patcher que les objets Valuable
-            if (__instance.gameObject.GetComponentInParent<ValuableObject>() == null)
+            // 1) Bypass si Play interne du looper NCS
+            if (NcsSpeakerLooper.ShouldBypass(__instance))
                 return true;
 
-            var plugin = LakakaSpeaker.Instance;
-            if (plugin == null)
+            // 2) Cherche ValuableObject parent
+            var valuable = __instance.gameObject.GetComponentInParent<ValuableObject>();
+            if (valuable == null)
                 return true;
 
-            if (__instance.gameObject.name.Contains("JBLSpeaker", StringComparison.OrdinalIgnoreCase))
+            var instance = LakakaSpeaker.Instance;
+            if (instance == null)
+                return true;
+
+            // Ne cibler que les objets dont le nom contient "JBLSpeaker"
+            if (!valuable.gameObject.name.Contains("JBLSpeaker", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            // Mode non-NCS : boucle aléatoire
+            if (!instance.IsNcsMode)
             {
-                __instance.playOnAwake = false;
-                __instance.Stop();
-
-                if (plugin.IsNcsMode)
+                AudioClip audioClip = instance.GetRandomClip();
+                if (audioClip != null)
                 {
-                    plugin.L.LogInfo($"🎵 [Patch Prefix] NCS mode activé pour {__instance.gameObject.name}");
-                    plugin.StartCoroutine(plugin.PlayOneRandomNcsClip(__instance));
-                }
-                else
-                {
-                    var randomClip = plugin.GetRandomClip();
-                    if (randomClip == null)
-                    {
-                        plugin.L.LogWarning("🎵 Aucun clip local à jouer.");
-                        return false;
-                    }
-
-                    __instance.clip = randomClip;
+                    __instance.playOnAwake = false;
+                    __instance.Stop();
+                    __instance.clip = audioClip;
                     __instance.volume = 0.8f;
                     __instance.loop = false;
-
-                    plugin.L.LogInfo($"🎵 [Patch Prefix] lecture locale : {randomClip.name}");
+                    instance.L.LogInfo("🎵 [Play Prefix] '" + __instance.gameObject.name + "' -> clip: " + audioClip.name);
 
                     if (__instance.gameObject.GetComponent<RandomMusicLooper>() == null)
                     {
                         __instance.gameObject.AddComponent<RandomMusicLooper>();
-                        plugin.L.LogInfo("🔁 RandomMusicLooper ajouté");
+                        instance.L.LogInfo("🔁 RandomMusicLooper ajouté");
                     }
-
-                    __instance.Play();
                 }
-
-                // Ne pas laisser Unity appeler Play() — on le contrôle
+                else
+                {
+                    instance.L.LogWarning("RandomMusicLooper: aucun clip aléatoire disponible.");
+                }
+                // Intercepte Play pour JBLSpeaker hors NCS
                 return false;
             }
+            else
+            {
+                // Mode NCS
+                var looper = __instance.GetComponentInParent<NcsSpeakerLooper>();
+                if (looper == null)
+                {
+                    instance.L.LogWarning($"[Patch] NcsSpeakerLooper non trouvé sur '{valuable.gameObject.name}' au Play. Ajout dynamique.");
+                    looper = valuable.gameObject.AddComponent<NcsSpeakerLooper>();
+                    looper.Init(__instance);
+                }
+                if (!looper.IsStarted)
+                {
+                    looper.StartLoopIfNeeded();
+                    instance.L.LogInfo($"[Patch] Démarrage du loop NCS pour '{valuable.gameObject.name}'.");
+                }
+                // Une fois démarré, on bloque tout Play manuel ultérieur pour éviter de perturber la boucle.
+                return false;
+            }
+        }
 
-            return true;
+        /// <summary>
+        /// Patch pour ajouter le NcsSpeakerLooper dès Awake du ValuableObject si le mode NCS est déjà actif.
+        /// </summary>
+        [HarmonyPatch(typeof(ValuableObject), "Awake")]
+        public class Patch_JBLSpeaker_Awake
+        {
+            static void Postfix(ValuableObject __instance)
+            {
+                var instance = LakakaSpeaker.Instance;
+                if (instance == null)
+                    return;
+
+                if (instance.IsNcsMode && __instance.gameObject.name.Contains("JBLSpeaker", StringComparison.OrdinalIgnoreCase))
+                {
+                    var audioSource = __instance.GetComponentInChildren<AudioSource>();
+                    if (audioSource != null && __instance.gameObject.GetComponent<NcsSpeakerLooper>() == null)
+                    {
+                        var looper = __instance.gameObject.AddComponent<NcsSpeakerLooper>();
+                        looper.Init(audioSource);
+                        instance.L.LogInfo($"[Awake Patch] NcsSpeakerLooper ajouté et initialisé sur '{__instance.gameObject.name}'.");
+                    }
+                }
+            }
         }
     }
 }

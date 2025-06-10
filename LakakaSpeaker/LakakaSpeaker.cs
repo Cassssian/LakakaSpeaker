@@ -6,122 +6,24 @@ using HarmonyLib;
 using MenuLib;               // pour MenuAPI, REPOPopupPage, REPOButton, REPOInputField, etc.
 using MenuLib.MonoBehaviors; // pour accéder à MenuManager.instance.StartCoroutine(...)
 using MenuLib.Structs;      // pour la structure Padding
-using Photon.Pun;
 using Photon.Realtime;
 using REPOLib.Modules;
 using System;
 using System.Collections;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
-using System.Reflection;
-using System.Runtime.CompilerServices;
 using TMPro;                // pour TMP_InputField, TMP_Text
 using UnityEngine;
 using UnityEngine.Events;
 using UnityEngine.Networking;
-using UnityEngine.UI;
-
-[assembly: CompilationRelaxations(8)]
-[assembly: RuntimeCompatibility(WrapNonExceptionThrows = true)]
-[assembly: Debuggable(DebuggableAttribute.DebuggingModes.Default | DebuggableAttribute.DebuggingModes.DisableOptimizations | DebuggableAttribute.DebuggingModes.IgnoreSymbolStoreSequencePoints | DebuggableAttribute.DebuggingModes.EnableEditAndContinue)]
-[assembly: IgnoresAccessChecksTo("Assembly-CSharp-firstpass")]
-[assembly: IgnoresAccessChecksTo("Assembly-CSharp")]
-[assembly: IgnoresAccessChecksTo("Autodesk.Fbx")]
-[assembly: IgnoresAccessChecksTo("Facepunch.Steamworks.Win64")]
-[assembly: IgnoresAccessChecksTo("FbxBuildTestAssets")]
-[assembly: IgnoresAccessChecksTo("Klattersynth")]
-[assembly: IgnoresAccessChecksTo("Photon3Unity3D")]
-[assembly: IgnoresAccessChecksTo("PhotonChat")]
-[assembly: IgnoresAccessChecksTo("PhotonRealtime")]
-[assembly: IgnoresAccessChecksTo("PhotonUnityNetworking")]
-[assembly: IgnoresAccessChecksTo("PhotonUnityNetworking.Utilities")]
-[assembly: IgnoresAccessChecksTo("PhotonVoice.API")]
-[assembly: IgnoresAccessChecksTo("PhotonVoice")]
-[assembly: IgnoresAccessChecksTo("PhotonVoice.PUN")]
-[assembly: IgnoresAccessChecksTo("SingularityGroup.HotReload.Runtime")]
-[assembly: IgnoresAccessChecksTo("SingularityGroup.HotReload.Runtime.Public")]
-[assembly: IgnoresAccessChecksTo("Sirenix.OdinInspector.Attributes")]
-[assembly: IgnoresAccessChecksTo("Sirenix.Serialization.Config")]
-[assembly: IgnoresAccessChecksTo("Sirenix.Serialization")]
-[assembly: IgnoresAccessChecksTo("Sirenix.Utilities")]
-[assembly: IgnoresAccessChecksTo("Unity.AI.Navigation")]
-[assembly: IgnoresAccessChecksTo("Unity.Formats.Fbx.Runtime")]
-[assembly: IgnoresAccessChecksTo("Unity.InputSystem")]
-[assembly: IgnoresAccessChecksTo("Unity.InputSystem.ForUI")]
-[assembly: IgnoresAccessChecksTo("Unity.Postprocessing.Runtime")]
-[assembly: IgnoresAccessChecksTo("Unity.RenderPipelines.Core.Runtime")]
-[assembly: IgnoresAccessChecksTo("Unity.RenderPipelines.Core.ShaderLibrary")]
-[assembly: IgnoresAccessChecksTo("Unity.RenderPipelines.ShaderGraph.ShaderGraphLibrary")]
-[assembly: IgnoresAccessChecksTo("Unity.TextMeshPro")]
-[assembly: IgnoresAccessChecksTo("Unity.Timeline")]
-[assembly: IgnoresAccessChecksTo("Unity.VisualScripting.Antlr3.Runtime")]
-[assembly: IgnoresAccessChecksTo("Unity.VisualScripting.Core")]
-[assembly: IgnoresAccessChecksTo("Unity.VisualScripting.Flow")]
-[assembly: IgnoresAccessChecksTo("Unity.VisualScripting.State")]
-[assembly: IgnoresAccessChecksTo("UnityEngine.ARModule")]
-[assembly: IgnoresAccessChecksTo("UnityEngine.NVIDIAModule")]
-[assembly: IgnoresAccessChecksTo("UnityEngine.UI")]
-[assembly: IgnoresAccessChecksTo("websocket-sharp")]
-
-namespace Microsoft.CodeAnalysis
-{
-    [CompilerGenerated]
-    [Microsoft.CodeAnalysis.Embedded]
-    internal sealed class EmbeddedAttribute : Attribute
-    {
-    }
-}
-namespace System.Runtime.CompilerServices
-{
-    [CompilerGenerated]
-    [Microsoft.CodeAnalysis.Embedded]
-    [AttributeUsage(AttributeTargets.Class | AttributeTargets.Property | AttributeTargets.Field | AttributeTargets.Event | AttributeTargets.Parameter | AttributeTargets.ReturnValue | AttributeTargets.GenericParameter, AllowMultiple = false, Inherited = false)]
-    internal sealed class NullableAttribute : Attribute
-    {
-        public readonly byte[] NullableFlags;
-
-        public NullableAttribute(byte P_0)
-        {
-            NullableFlags = new byte[1] { P_0 };
-        }
-
-        public NullableAttribute(byte[] P_0)
-        {
-            NullableFlags = P_0;
-        }
-    }
-    [CompilerGenerated]
-    [Microsoft.CodeAnalysis.Embedded]
-    [AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct | AttributeTargets.Method | AttributeTargets.Interface | AttributeTargets.Delegate, AllowMultiple = false, Inherited = false)]
-    internal sealed class NullableContextAttribute : Attribute
-    {
-        public readonly byte Flag;
-
-        public NullableContextAttribute(byte P_0)
-        {
-            Flag = P_0;
-        }
-    }
-    [CompilerGenerated]
-    [Microsoft.CodeAnalysis.Embedded]
-    [AttributeUsage(AttributeTargets.Module, AllowMultiple = false, Inherited = false)]
-    internal sealed class RefSafetyRulesAttribute : Attribute
-    {
-        public readonly int Version;
-
-        public RefSafetyRulesAttribute(int P_0)
-        {
-            Version = P_0;
-        }
-    }
-}
 
 namespace LakakaSpeaker
 {
 
+
+    #region Class
     [Serializable]
     public class NcsTrack
     {
@@ -145,14 +47,37 @@ namespace LakakaSpeaker
     {
         public List<NcsTrack> tracks;
     }
+    #endregion
+
 
     [BepInPlugin("cassian.LakakaSpeaker", "LakakaSpeaker", "1.0.0")]
     [BepInDependency("PaintedThornStudios.PaintedUtils", BepInDependency.DependencyFlags.HardDependency)]
     [BepInDependency("REPOLib", BepInDependency.DependencyFlags.HardDependency)]
     [BepInDependency("nickklmao.menulib", BepInDependency.DependencyFlags.HardDependency)]
-    public class LakakaSpeaker : BaseUnityPlugin, IInRoomCallbacks
+    public partial class LakakaSpeaker : BaseUnityPlugin
     {
 
+
+        #region Variable
+        // Classe interne pour buffer audio
+        private class MusicBuffer
+        {
+            private Dictionary<int, byte[]> chunks = new Dictionary<int, byte[]>();
+            private int expectedChunks;
+            public bool IsComplete => chunks.Count == expectedChunks;
+
+            public void StoreChunk(int index, byte[] data)
+            {
+                chunks[index] = data;
+            }
+            public AudioClip AssembleClip()
+            {
+                // reconstruction du byte[] complet puis conversion AudioClip
+                return null;
+            }
+        }
+
+        new readonly ManualLogSource Logger = BepInEx.Logging.Logger.CreateLogSource("LakakaSpeaker");
         public ManualLogSource L => Logger;
 
 
@@ -179,10 +104,6 @@ namespace LakakaSpeaker
         private Dictionary<string, ConfigEntry<bool>> musicToggles = new Dictionary<string, ConfigEntry<bool>>();
         private static readonly Dictionary<ConfigEntryBase, object> changedEntryValues = new Dictionary<ConfigEntryBase, object>();
 
-        private ConfigEntry<bool> reloadEntry;
-
-
-        // With the following line to ensure compatibility with C# 8.0:
         private List<AudioClip> clips = new List<AudioClip>();
 
 
@@ -199,29 +120,35 @@ namespace LakakaSpeaker
         private static readonly Dictionary<ConfigEntryBase, object> originalEntryValues = new Dictionary<ConfigEntryBase, object>();
 
 
+
+        #region NCS
         /// <summary>
         /// NCS URLs pour les musiques NCS (No Copyright Sounds).
         /// </summary>
         internal List<string> ncsUrls = new List<string>();
         private ConfigEntry<bool> ncsTrackPlayEntry;
         public bool IsNcsMode => ncsTrackPlayEntry?.Value ?? false;
+        #endregion
 
 
-
-
-        // ---- Partage client-serveur ----
-        private const int MaxChunkSize = 48000; // 48 Ko, bien en-dessous de la limite Photon (~0.5 Mo)
+        #region Partage client-serveur
         private class IncomingFile
         {
             public List<byte[]> Chunks = new List<byte[]>();
             public int ExpectedChunks;
             public int ReceivedChunks;
         }
-        private Dictionary<string, IncomingFile> incomingFiles = new Dictionary<string, IncomingFile>();
-        // ----------------------------------
+        private Dictionary<int, MusicBuffer> MusicBuffers = new Dictionary<int, MusicBuffer>();
+        private NetworkedEvent _chunkEvent;
+        private int _nextClipToSend = 0;
+        private const int CHUNK_SIZE = 16 * 1024;
+        #endregion
 
 
+        #endregion
 
+
+        #region Partie code LakakaSpeaker
         private void LoadMusicFolders()
         {
             // Si la config n'existe pas ou est vide, on initialise avec le dossier de base
@@ -262,7 +189,7 @@ namespace LakakaSpeaker
         {
             object obj = typeof(LakakaSpeaker).GetCustomAttributes(typeof(BepInPlugin), inherit: false)[0];
             BepInPlugin val = (BepInPlugin)((obj is BepInPlugin) ? obj : null);
-            return ((val != null) ? val.Name : null) ?? "LakakaSpeakerf";
+            return ((val != null) ? val.Name : null) ?? "LakakaSpeaker";
         }
 
 
@@ -278,15 +205,10 @@ namespace LakakaSpeaker
             return input;
         }
 
-        private void OnDestroy()
-        {
-            Photon.Pun.PhotonNetwork.RemoveCallbackTarget(this);
-        }
 
         private void Awake()
         {
             Instance = this;
-            Photon.Pun.PhotonNetwork.AddCallbackTarget(this);
 
             L.LogInfo("LakakaSpeaker initializing...");
 
@@ -324,33 +246,18 @@ namespace LakakaSpeaker
             ncsTrackPlayEntry = Config.Bind(
                 "Mode NCS",
                 "Activer lecture NCS",
-                false,
+                true,
                 new ConfigDescription(
                     "Si activé, joue les musiques NCS aléatoires au lieu des musiques locales.",
                     null,
                     new object[] { "HideREPOConfig" }
                 )
             );
+            L.LogMessage("NCS mode enabled, loading NCS URLs only.");
+            string jsonUrl = "https://raw.githubusercontent.com/Cassssian/LakakaSpeaker/refs/heads/master/LakakaSpeaker/ncs_music_link.json";
+            StartCoroutine(LoadNcsUrlsOnly(jsonUrl));
+            StartCoroutine(LoadAllClips());
 
-            // 3) Charge dès à présent tous les clips (mais UI ne sera pas encore visible)
-            if (IsHost())
-            {
-                L.LogMessage("Loading all audio clips");
-                if (ncsTrackPlayEntry.Value)
-                {
-                    string jsonUrl = "https://…/ncs_all_tracks.json"; // <-- à personnaliser
-                    StartCoroutine(LoadNcsUrlsOnly(jsonUrl));
-                }
-                else
-                {
-                    StartCoroutine(LoadAllClips());
-                }
-            }
-            else
-            {
-                L.LogMessage("Not loading audio clips, audio clips are loading on host only.");
-            }
-            // ─── NOUVEAU POUR REPO “Lakaka” : on ajoute notre bouton “Lakaka” au menu principal ──────────────────
             try
             {
                 // Dans le Main Menu
@@ -373,10 +280,10 @@ namespace LakakaSpeaker
             {
                 L.LogError($"[LakakaSpeaker] Impossible d'ajouter le bouton REPO “Lakaka” : {ex}");
             }
-            // ─────────────────────────────────────────────────────────────────────────────────────────────────
-            L.LogInfo("LakakaSpeaker Awake terminé, prêt à envoyer les musiques aux clients.");
-        }
 
+            //InitializeStreamingNetworkEvent();
+            //StartCoroutine(WaitForLobbyThenStream());
+        }
 
 
         /// <summary>
@@ -556,7 +463,7 @@ namespace LakakaSpeaker
         private void Update()
         {
             // 2) Dès qu'on a au moins 1 clip ET qu'on n'a pas encore initialisé Harmony + bundle
-            if (!_initialized && clips.Count > 0)
+            if (!_initialized && clips.Count > 0 && ncsUrls.Count > 0)
             {
                 _initialized = true;
 
@@ -575,9 +482,11 @@ namespace LakakaSpeaker
                 L.LogInfo($"{Info.Metadata.GUID} v{Info.Metadata.Version} fully loaded.");
             }
         }
+        
+        #endregion
 
 
-        // -------------------- Partie UI --------------------
+        #region Partie UI
 
         private static void CreateLakakaFolderMenu()
         {
@@ -1004,10 +913,10 @@ namespace LakakaSpeaker
             return 0;
         }
 
-        // ---------------------------------------------------
+        #endregion
 
 
-        // ----------------------- Partie NCS -----------------------------------
+        #region Partie NCS
         private IEnumerator LoadNcsUrlsOnly(string jsonUrl)
         {
             using UnityWebRequest uwr = UnityWebRequest.Get(jsonUrl);
@@ -1021,8 +930,8 @@ namespace LakakaSpeaker
 
             // On entoure le JSON pour que JsonUtility sache désérialiser
             string rawJson = uwr.downloadHandler.text;
-            string wrappedJson = "{\"tracks\":" + rawJson + "}";
-            NcsTrackList list = JsonUtility.FromJson<NcsTrackList>(wrappedJson);
+            //string wrappedJson = "{\"tracks\":" + rawJson + "}";
+            NcsTrackList list = JsonUtility.FromJson<NcsTrackList>(rawJson);
 
             if (list == null || list.tracks == null)
             {
@@ -1083,123 +992,138 @@ namespace LakakaSpeaker
                 L.LogInfo("🔁 RandomMusicLooper ajouté pour enchaîner NCS.");
             }
         }
+        #endregion
 
 
-        // --------------------- Partie partage ---------------------------------
+    //    #region Partie Client-Server
 
-        private bool IsHost()
-        {
-            return Photon.Pun.PhotonNetwork.IsMasterClient;
-        }
+    //    // Appelé dans Awake()
+    //    private void InitializeStreamingNetworkEvent()
+    //    {
+    //        // Déclare l'événement de diffusion de chunks
+    //        _chunkEvent = new NetworkedEvent(
+    //            "LakakaSpeaker_Chunk",
+    //            (EventData data) =>
+    //            {
+    //                var arr = (object[])data.CustomData;
+    //                int clipId = (int)arr[0];
+    //                int chunkIdx = (int)arr[1];
+    //                byte[] chunk = (byte[])arr[2];
+    //                ReceiveChunk(clipId, chunkIdx, chunk);
+    //            }
+    //        );
+    //    }
 
-        public IEnumerator SendAllMusicFilesToClient(int targetActorNumber)
-        {
-            foreach (var file in Directory.GetFiles(musicDir, "*.*")
-                .Where(f => f.EndsWith(".mp3") || f.EndsWith(".wav") || f.EndsWith(".ogg") || f.EndsWith(".aiff")))
-            {
-                SendFileToClient(Path.GetFileName(file), File.ReadAllBytes(file), targetActorNumber);
-                yield return new WaitForSeconds(0.1f);
-            }
-        }
+    //    // Remplace PhotonView.RPC par cet appel
+    //    private void SendChunkToAll(int clipId, int chunkIdx, byte[] chunk)
+    //    {
+    //        object[] payload = new object[] { clipId, chunkIdx, chunk };
+    //        // Envoie aux autres clients de la Steam Lobby
+    //        var raiseOpts = new RaiseEventOptions { Receivers = ReceiverGroup.Others };
+    //        // Fiable pour ne pas perdre de donnée
+    //        _chunkEvent.RaiseEvent(payload, raiseOpts, SendOptions.SendReliable);
+    //    }
 
-        private void SendFileToClient(string fileName, byte[] data, int targetActorNumber)
-        {
-            int totalChunks = (int)Math.Ceiling((double)data.Length / MaxChunkSize);
-            var target = PhotonNetwork.CurrentRoom.GetPlayer(targetActorNumber);
-            L.LogInfo($"Envoi du fichier {fileName} au client {targetActorNumber} ({data.Length} octets, {totalChunks} chunks)");
-            for (int i = 0; i < totalChunks; i++)
-            {
-                int chunkSize = Math.Min(MaxChunkSize, data.Length - i * MaxChunkSize);
-                byte[] chunk = new byte[chunkSize];
-                Array.Copy(data, i * MaxChunkSize, chunk, 0, chunkSize);
+    //    // Coroutine principale, appelée au début du lobby
+    //    private IEnumerator WaitForLobbyThenStream()
+    //    {
+    //        // Attend d'être dans le Lobby Steam
+    //        while (RunManager.instance == null
+    //            || RunManager.instance.levelCurrent == null
+    //            || !RunManager.instance.levelCurrent.name.Contains("Lobby"))
+    //            yield return null;
 
-                object[] content = new object[] { fileName, chunk, i, totalChunks };
-                Photon.Pun.PhotonView.Get(this).RPC("ReceiveMusicChunk", target, content);
-            }
-        }
+    //        // Lancement du streaming séquentiel
+    //        StartCoroutine(StreamClipsSequentially());
+    //    }
 
-        [PunRPC]
-        public void ReceiveMusicChunk(string fileName, byte[] chunk, int chunkIndex, int totalChunks)
-        {
-            if (!incomingFiles.TryGetValue(fileName, out var incoming))
-            {
-                incoming = new IncomingFile { ExpectedChunks = totalChunks };
-                incomingFiles[fileName] = incoming;
-            }
-            // S'assure que la liste a la bonne taille
-            while (incoming.Chunks.Count < totalChunks)
-                incoming.Chunks.Add(null);
+    //    // Envoi morceau par morceau en parallèle de la lecture
+    //    private IEnumerator StreamClipsSequentially()
+    //    {
+    //        while (_nextClipToSend < clips.Count)
+    //        {
+    //            int clipId = _nextClipToSend;
+    //            AudioClip clip = clips[clipId];
+    //            SendAllChunksForClip(clipId, clip);
 
-            incoming.Chunks[chunkIndex] = chunk;
-            incoming.ReceivedChunks++;
+    //            // Attendre le début de la lecture du clip sur le client (optionnel)
+    //            yield return new WaitForSeconds(0.1f);
 
-            if (incoming.ReceivedChunks == incoming.ExpectedChunks)
-            {
-                // Reconstituer le fichier
-                int totalLength = incoming.Chunks.Sum(c => c?.Length ?? 0);
-                byte[] fullData = new byte[totalLength];
-                int offset = 0;
-                foreach (var c in incoming.Chunks)
-                {
-                    if (c != null)
-                    {
-                        Buffer.BlockCopy(c, 0, fullData, offset, c.Length);
-                        offset += c.Length;
-                    }
-                }
-                // Sauvegarder dans un fichier temporaire
-                string tempPath = Path.Combine(Application.temporaryCachePath, fileName);
-                File.WriteAllBytes(tempPath, fullData);
+    //            // Durée d'un clip en secondes
+    //            float duration = clip.length;
+    //            // Pendant la lecture, on envoie les chunks progressivement
+    //            int totalChunks = Mathf.CeilToInt((float)(clip.samples * clip.channels * sizeof(float)) / CHUNK_SIZE);
 
-                // Charger et jouer le clip
-                StartCoroutine(PlayClipFromFile(tempPath));
+    //            for (int i = 0; i < totalChunks; i++)
+    //            {
+    //                // On envoie un chunk par frame ou toutes les X ms
+    //                // Ici on détermine un intervalle basique
+    //                SendChunkToAll(clipId, i, GetChunkData(clip, i));
+    //                yield return null;
+    //            }
 
-                incomingFiles.Remove(fileName);
-            }
-        }
+    //            // Attendre la fin de la lecture avant de passer au suivant
+    //            yield return new WaitForSeconds(duration);
+    //            _nextClipToSend++;
+    //        }
 
-        private IEnumerator PlayClipFromFile(string path)
-        {
-            using (var uwr = UnityWebRequestMultimedia.GetAudioClip("file://" + path, GetAudioType(path)))
-            {
-                yield return uwr.SendWebRequest();
-                if (uwr.result == UnityWebRequest.Result.Success)
-                {
-                    var clip = DownloadHandlerAudioClip.GetContent(uwr);
-                    // Jouez le clip ici (par exemple, via un AudioSource)
-                }
-                else
-                {
-                    L.LogError($"Erreur lors du chargement du clip {path} : {uwr.error}");
-                }
-            }
-        }
+    //        L.LogInfo("✅ Streaming séquentiel terminé.");
+    //    }
 
-        public void OnPlayerEnteredRoom(Player newPlayer)
-        {
-            L.LogInfo($"OnPlayerEnteredRoom appelé pour {newPlayer.NickName} (ActorNumber={newPlayer.ActorNumber})");
-            if (IsHost())
-                StartCoroutine(SendAllMusicFilesToClient(newPlayer.ActorNumber));
-        }
+    //    // Prépare et envoie tous les chunks d'un clip d'un coup
+    //    private void SendAllChunksForClip(int clipId, AudioClip clip)
+    //    {
+    //        int sampleCount = clip.samples * clip.channels;
+    //        float[] floatData = new float[sampleCount];
+    //        clip.GetData(floatData, 0);
+    //        byte[] data = new byte[floatData.Length * sizeof(float)];
+    //        Buffer.BlockCopy(floatData, 0, data, 0, data.Length);
 
-        public void OnPlayerLeftRoom(Photon.Realtime.Player otherPlayer) { }
-        public void OnRoomPropertiesUpdate(ExitGames.Client.Photon.Hashtable propertiesThatChanged) { }
-        public void OnPlayerPropertiesUpdate(Player targetPlayer, ExitGames.Client.Photon.Hashtable changedProps) { }
-        public void OnMasterClientSwitched(Photon.Realtime.Player newMasterClient) { }
+    //        int totalChunks = Mathf.CeilToInt((float)data.Length / CHUNK_SIZE);
+    //        for (int i = 0; i < totalChunks; i++)
+    //        {
+    //            int offset = i * CHUNK_SIZE;
+    //            int size = Math.Min(CHUNK_SIZE, data.Length - offset);
+    //            byte[] chunk = new byte[size];
+    //            Buffer.BlockCopy(data, offset, chunk, 0, size);
+    //            SendChunkToAll(clipId, i, chunk);
+    //        }
+    //    }
 
-        public void OnJoinedRoom()
-        {
-            L.LogInfo("OnJoinedRoom appelé (vous êtes dans la room Photon)");
-        }
-        public void OnCreatedRoom()
-        {
-            L.LogInfo("OnCreatedRoom appelé (room créée)");
-        }
-        public void OnLeftRoom()
-        {
-            L.LogInfo("OnLeftRoom appelé (room quittée)");
-        }
+    //    // Extrait un chunk donné (optionnel si on envoie progressivement)
+    //    private byte[] GetChunkData(AudioClip clip, int index)
+    //    {
+    //        int sampleCount = clip.samples * clip.channels;
+    //        float[] floatData = new float[sampleCount];
+    //        clip.GetData(floatData, 0);
+    //        byte[] data = new byte[floatData.Length * sizeof(float)];
+    //        Buffer.BlockCopy(floatData, 0, data, 0, data.Length);
 
+    //        int offset = index * CHUNK_SIZE;
+    //        int size = Math.Min(CHUNK_SIZE, data.Length - offset);
+    //        byte[] chunk = new byte[size];
+    //        Buffer.BlockCopy(data, offset, chunk, 0, size);
+    //        return chunk;
+    //    }
+
+    //    // Réception et assemblage côté client (existing MusicBuffer)
+    //    private void ReceiveChunk(int clipId, int chunkIndex, byte[] data)
+    //    {
+    //        if (!MusicBuffers.TryGetValue(clipId, out var buffer))
+    //        {
+    //            buffer = new MusicBuffer();
+    //            MusicBuffers[clipId] = buffer;
+    //        }
+    //        buffer.StoreChunk(chunkIndex, data);
+    //        if (buffer.IsComplete)
+    //        {
+    //            AudioClip assembled = buffer.AssembleClip();
+    //            // Jouer ou stocker le clip
+    //        }
+    //    }
+
+
+    //    #endregion
     }
 }
 
