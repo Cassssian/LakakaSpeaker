@@ -25,6 +25,9 @@
     <Reference Include="BepInEx">
       <HintPath>D:\Mods Unity\R.E.P.O\dll\BepInEx.dll</HintPath>
     </Reference>
+    <Reference Include="Facepunch.Steamworks.Win64">
+      <HintPath>dep\Facepunch.Steamworks.Win64.dll</HintPath>
+    </Reference>
     <Reference Include="MenuLib">
       <HintPath>..\..\..\..\AppData\Roaming\r2modmanPlus-local\REPO\profiles\uofaz\BepInEx\plugins\nickklmao-MenuLib\MenuLib.dll</HintPath>
     </Reference>

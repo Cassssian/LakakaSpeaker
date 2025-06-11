@@ -8,6 +8,8 @@ using MenuLib.MonoBehaviors; // pour accéder à MenuManager.instance.StartCorou
 using MenuLib.Structs;      // pour la structure Padding
 using Photon.Realtime;
 using REPOLib.Modules;
+using Steamworks;
+using Steamworks.Data;
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -18,6 +20,7 @@ using TMPro;                // pour TMP_InputField, TMP_Text
 using UnityEngine;
 using UnityEngine.Events;
 using UnityEngine.Networking;
+using Color = UnityEngine.Color;
 
 namespace LakakaSpeaker
 {
@@ -47,6 +50,16 @@ namespace LakakaSpeaker
     {
         public List<NcsTrack> tracks;
     }
+    public class ClipReceiveBuffer
+    {
+        public int TotalBytes;
+        public int SampleRate;
+        public int Channels;
+        public int TotalChunks;
+        public byte[][] Chunks;
+        public int ReceivedCount;
+    }
+
     #endregion
 
 
@@ -140,8 +153,15 @@ namespace LakakaSpeaker
         }
         private Dictionary<int, MusicBuffer> MusicBuffers = new Dictionary<int, MusicBuffer>();
         private NetworkedEvent _chunkEvent;
+        private NetworkedEvent _ncsUrlEvent;
         private int _nextClipToSend = 0;
-        private const int CHUNK_SIZE = 16 * 1024;
+        private const int AUDIO_HEADER = 0;
+        private const int AUDIO_CHUNK = 1;
+        private const int NCS_URL = 2;
+        private const int NCS_REQUEST = 3;
+
+        private const int CHUNK_SIZE = 1000;
+        private Dictionary<int, ClipReceiveBuffer> receiveBuffers = new Dictionary<int, ClipReceiveBuffer>();
         #endregion
 
 
@@ -253,6 +273,7 @@ namespace LakakaSpeaker
                     new object[] { "HideREPOConfig" }
                 )
             );
+
             L.LogMessage("NCS mode enabled, loading NCS URLs only.");
             string jsonUrl = "https://raw.githubusercontent.com/Cassssian/LakakaSpeaker/refs/heads/master/LakakaSpeaker/ncs_music_link.json";
             StartCoroutine(LoadNcsUrlsOnly(jsonUrl));
@@ -281,8 +302,28 @@ namespace LakakaSpeaker
                 L.LogError($"[LakakaSpeaker] Impossible d'ajouter le bouton REPO “Lakaka” : {ex}");
             }
 
-            //InitializeStreamingNetworkEvent();
-            //StartCoroutine(WaitForLobbyThenStream());
+            _ncsUrlEvent = new NetworkedEvent(
+            "LakakaSpeaker_NcsUrl",
+            (EventData data) =>
+            {
+                string url = data.CustomData as string;
+                if (!string.IsNullOrEmpty(url))
+                {
+                    StartCoroutine(PlayNcsUrlOnClient(url));
+                }
+            }
+        );
+
+            SteamNetworking.OnP2PSessionRequest = (SteamId remote) =>
+            {
+                SteamNetworking.AcceptP2PSessionWithUser(remote);
+                L.LogInfo($"[LakakaSpeaker] P2P session request accepted from {remote.Value}");
+            };
+
+            SteamNetworking.OnP2PConnectionFailed = (SteamId remote, P2PSessionError error) =>
+            {
+                L.LogWarning($"[LakakaSpeaker] P2P connection failed with {remote.Value}, erreur: {error}");
+            };
         }
 
 
@@ -480,6 +521,8 @@ namespace LakakaSpeaker
                 LoadAssetBundle();
                 LoadValuablesFromResources();
                 L.LogInfo($"{Info.Metadata.GUID} v{Info.Metadata.Version} fully loaded.");
+
+                StartCoroutine(P2PPacket());
             }
         }
         
@@ -951,179 +994,297 @@ namespace LakakaSpeaker
             L.LogInfo($"✅ {ncsUrls.Count} URLs NCS stockées pour usage ultérieur.");
         }
 
-        // Coroutine pour télécharger et jouer un seul clip depuis URL
-        public IEnumerator PlayOneRandomNcsClip(AudioSource src)
+        /// <summary>
+        /// Envoie aux pairs l’URL d’une musique NCS afin qu’ils téléchargent et jouent localement.
+        /// </summary>
+        private void SendNcsUrlToAll_P2P(string url)
         {
-            if (ncsUrls == null || ncsUrls.Count == 0)
+            if (!HostDetector.IsLocalPlayerHost()) return;
+            byte[] urlBytes = System.Text.Encoding.UTF8.GetBytes(url);
+            byte[] packet = new byte[1 + urlBytes.Length];
+            packet[0] = NCS_URL;
+            Buffer.BlockCopy(urlBytes, 0, packet, 1, urlBytes.Length);
+
+            var lobbyOpt = SteamLobbyHelper.CurrentLobby;
+            if (!lobbyOpt.HasValue || !lobbyOpt.Value.Id.IsValid)
             {
-                L.LogWarning("Liste NCS vide : impossible de jouer un morceau aléatoire.");
-                yield break;
+                Debug.LogWarning("[LakakaSpeaker] Pas de lobby courant valide");
+                return;
             }
-
-            // Choix aléatoire d’une URL dans ncsUrls
-            string randomUrl = ncsUrls[UnityEngine.Random.Range(0, ncsUrls.Count)];
-            L.LogInfo($"🎧 Téléchargement à la volée depuis NCS : {randomUrl}");
-
-            using UnityWebRequest uwr = UnityWebRequestMultimedia.GetAudioClip(randomUrl, AudioType.MPEG);
-            yield return uwr.SendWebRequest();
-
-            if (uwr.result != UnityWebRequest.Result.Success)
+            Lobby lobby = lobbyOpt.Value;
+            foreach (var member in lobby.Members)
             {
-                L.LogError($"❌ Échec du téléchargement NCS : {uwr.error}");
-                yield break;
-            }
-
-            AudioClip clip = DownloadHandlerAudioClip.GetContent(uwr);
-            clip.name = Path.GetFileNameWithoutExtension(randomUrl);
-
-            // Affectation du clip et paramétrage
-            src.clip = clip;
-            src.volume = 0.8f;
-            src.loop = false;
-            L.LogInfo($"▶️ Lecture NCS aléatoire : {clip.name}");
-
-            // Jouer une fois le clip chargé
-            src.Play();
-
-            // Ajouter RandomMusicLooper pour enchaîner après la fin du clip
-            if (src.gameObject.GetComponent<RandomMusicLooper>() == null)
-            {
-                src.gameObject.AddComponent<RandomMusicLooper>();
-                L.LogInfo("🔁 RandomMusicLooper ajouté pour enchaîner NCS.");
+                SteamId memberSid = member.Id;
+                if (memberSid == SteamClient.SteamId) continue;
+                SteamNetworking.SendP2PPacket(memberSid, packet, packet.Length, nChannel: 0, P2PSend.Reliable);
             }
         }
+
+
+
+
+
+        private IEnumerator PlayNcsUrlOnClient(string url)
+        {
+            L.LogInfo($"[Client] Téléchargement NCS synchronisé: {url}");
+            using UnityWebRequest uwr = UnityWebRequestMultimedia.GetAudioClip(url, AudioType.MPEG);
+            yield return uwr.SendWebRequest();
+
+            if (uwr.result == UnityWebRequest.Result.Success)
+            {
+                var clip = DownloadHandlerAudioClip.GetContent(uwr);
+                if (clip != null && clip.length > 0.1f)
+                {
+                    var src = GetOrCreateAudioSource();
+                    src.clip = clip;
+                    src.volume = 0.8f;
+                    src.loop = false;
+                    src.Play();
+                }
+            }
+            else
+            {
+                L.LogError($"[Client] Erreur téléchargement NCS: {uwr.error}");
+            }
+        }
+
+        // Utilitaire pour obtenir/créer un AudioSource
+        private AudioSource GetOrCreateAudioSource()
+        {
+            var go = GameObject.Find("LakakaSpeakerAudio") ?? new GameObject("LakakaSpeakerAudio");
+            var src = go.GetComponent<AudioSource>() ?? go.AddComponent<AudioSource>();
+            return src;
+        }
+
         #endregion
 
 
-    //    #region Partie Client-Server
+        #region Partie Client-Server
+        /// <summary>
+        /// Découpe dataBytes en chunks et envoie chaque chunk aux pairs.
+        /// </summary>
+        private void SendAllChunksForClip_P2P(int clipId, byte[] dataBytes)
+        {
+            if (!HostDetector.IsLocalPlayerHost()) return;
 
-    //    // Appelé dans Awake()
-    //    private void InitializeStreamingNetworkEvent()
-    //    {
-    //        // Déclare l'événement de diffusion de chunks
-    //        _chunkEvent = new NetworkedEvent(
-    //            "LakakaSpeaker_Chunk",
-    //            (EventData data) =>
-    //            {
-    //                var arr = (object[])data.CustomData;
-    //                int clipId = (int)arr[0];
-    //                int chunkIdx = (int)arr[1];
-    //                byte[] chunk = (byte[])arr[2];
-    //                ReceiveChunk(clipId, chunkIdx, chunk);
-    //            }
-    //        );
-    //    }
+            var lobbyOpt = SteamLobbyHelper.CurrentLobby;
+            if (!lobbyOpt.HasValue || !lobbyOpt.Value.Id.IsValid)
+            {
+                Debug.LogWarning("[LakakaSpeaker] Pas de lobby courant valide");
+                return;
+            }
+            Lobby lobby = lobbyOpt.Value;
 
-    //    // Remplace PhotonView.RPC par cet appel
-    //    private void SendChunkToAll(int clipId, int chunkIdx, byte[] chunk)
-    //    {
-    //        object[] payload = new object[] { clipId, chunkIdx, chunk };
-    //        // Envoie aux autres clients de la Steam Lobby
-    //        var raiseOpts = new RaiseEventOptions { Receivers = ReceiverGroup.Others };
-    //        // Fiable pour ne pas perdre de donnée
-    //        _chunkEvent.RaiseEvent(payload, raiseOpts, SendOptions.SendReliable);
-    //    }
+            int totalBytes = dataBytes.Length;
+            int totalChunks = Mathf.CeilToInt((float)totalBytes / CHUNK_SIZE);
 
-    //    // Coroutine principale, appelée au début du lobby
-    //    private IEnumerator WaitForLobbyThenStream()
-    //    {
-    //        // Attend d'être dans le Lobby Steam
-    //        while (RunManager.instance == null
-    //            || RunManager.instance.levelCurrent == null
-    //            || !RunManager.instance.levelCurrent.name.Contains("Lobby"))
-    //            yield return null;
+            for (int i = 0; i < totalChunks; i++)
+            {
+                int offset = i * CHUNK_SIZE;
+                int size = Math.Min(CHUNK_SIZE, totalBytes - offset);
+                // paquet = messageType + clipId + chunkIndex + payload
+                // messageType (1 byte) + clipId (4) + chunkIndex (4) + payload (size)
+                byte[] packet = new byte[1 + 4 + 4 + size];
+                packet[0] = (byte)AUDIO_CHUNK;
+                Buffer.BlockCopy(BitConverter.GetBytes(clipId), 0, packet, 1, 4);
+                Buffer.BlockCopy(BitConverter.GetBytes(i), 0, packet, 1 + 4, 4);
+                Buffer.BlockCopy(dataBytes, offset, packet, 1 + 4 + 4, size);
 
-    //        // Lancement du streaming séquentiel
-    //        StartCoroutine(StreamClipsSequentially());
-    //    }
-
-    //    // Envoi morceau par morceau en parallèle de la lecture
-    //    private IEnumerator StreamClipsSequentially()
-    //    {
-    //        while (_nextClipToSend < clips.Count)
-    //        {
-    //            int clipId = _nextClipToSend;
-    //            AudioClip clip = clips[clipId];
-    //            SendAllChunksForClip(clipId, clip);
-
-    //            // Attendre le début de la lecture du clip sur le client (optionnel)
-    //            yield return new WaitForSeconds(0.1f);
-
-    //            // Durée d'un clip en secondes
-    //            float duration = clip.length;
-    //            // Pendant la lecture, on envoie les chunks progressivement
-    //            int totalChunks = Mathf.CeilToInt((float)(clip.samples * clip.channels * sizeof(float)) / CHUNK_SIZE);
-
-    //            for (int i = 0; i < totalChunks; i++)
-    //            {
-    //                // On envoie un chunk par frame ou toutes les X ms
-    //                // Ici on détermine un intervalle basique
-    //                SendChunkToAll(clipId, i, GetChunkData(clip, i));
-    //                yield return null;
-    //            }
-
-    //            // Attendre la fin de la lecture avant de passer au suivant
-    //            yield return new WaitForSeconds(duration);
-    //            _nextClipToSend++;
-    //        }
-
-    //        L.LogInfo("✅ Streaming séquentiel terminé.");
-    //    }
-
-    //    // Prépare et envoie tous les chunks d'un clip d'un coup
-    //    private void SendAllChunksForClip(int clipId, AudioClip clip)
-    //    {
-    //        int sampleCount = clip.samples * clip.channels;
-    //        float[] floatData = new float[sampleCount];
-    //        clip.GetData(floatData, 0);
-    //        byte[] data = new byte[floatData.Length * sizeof(float)];
-    //        Buffer.BlockCopy(floatData, 0, data, 0, data.Length);
-
-    //        int totalChunks = Mathf.CeilToInt((float)data.Length / CHUNK_SIZE);
-    //        for (int i = 0; i < totalChunks; i++)
-    //        {
-    //            int offset = i * CHUNK_SIZE;
-    //            int size = Math.Min(CHUNK_SIZE, data.Length - offset);
-    //            byte[] chunk = new byte[size];
-    //            Buffer.BlockCopy(data, offset, chunk, 0, size);
-    //            SendChunkToAll(clipId, i, chunk);
-    //        }
-    //    }
-
-    //    // Extrait un chunk donné (optionnel si on envoie progressivement)
-    //    private byte[] GetChunkData(AudioClip clip, int index)
-    //    {
-    //        int sampleCount = clip.samples * clip.channels;
-    //        float[] floatData = new float[sampleCount];
-    //        clip.GetData(floatData, 0);
-    //        byte[] data = new byte[floatData.Length * sizeof(float)];
-    //        Buffer.BlockCopy(floatData, 0, data, 0, data.Length);
-
-    //        int offset = index * CHUNK_SIZE;
-    //        int size = Math.Min(CHUNK_SIZE, data.Length - offset);
-    //        byte[] chunk = new byte[size];
-    //        Buffer.BlockCopy(data, offset, chunk, 0, size);
-    //        return chunk;
-    //    }
-
-    //    // Réception et assemblage côté client (existing MusicBuffer)
-    //    private void ReceiveChunk(int clipId, int chunkIndex, byte[] data)
-    //    {
-    //        if (!MusicBuffers.TryGetValue(clipId, out var buffer))
-    //        {
-    //            buffer = new MusicBuffer();
-    //            MusicBuffers[clipId] = buffer;
-    //        }
-    //        buffer.StoreChunk(chunkIndex, data);
-    //        if (buffer.IsComplete)
-    //        {
-    //            AudioClip assembled = buffer.AssembleClip();
-    //            // Jouer ou stocker le clip
-    //        }
-    //    }
+                foreach (var member in lobby.Members)
+                {
+                    SteamId memberSid = member.Id;
+                    if (memberSid == Steamworks.SteamClient.SteamId) continue;
+                    bool sent = SteamNetworking.SendP2PPacket(memberSid, packet, packet.Length, nChannel: 0, P2PSend.Reliable);
+                    if (!sent)
+                    {
+                        L.LogWarning($"[LakakaSpeaker] Échec envoi chunk {i}/{totalChunks} du clip {clipId} à {member.Id}");
+                    }
+                }
+            }
+        }
 
 
-    //    #endregion
+
+        /// <summary>
+        /// Envoie aux pairs le header d’un clip audio : clipId, totalBytes, sampleRate, channels.
+        /// </summary>
+        private void SendClipHeader_P2P(int clipId, int totalBytes, int sampleRate, int channels)
+        {
+            if (!HostDetector.IsLocalPlayerHost()) return;
+
+            // messageType (1 byte) + clipId (4) + totalBytes (4) + sampleRate (4) + channels (4) = 17 bytes
+            byte[] header = new byte[1 + 4 + 4 + 4 + 4];
+            header[0] = (byte)AUDIO_HEADER;
+            Buffer.BlockCopy(BitConverter.GetBytes(clipId), 0, header, 1, 4);
+            Buffer.BlockCopy(BitConverter.GetBytes(totalBytes), 0, header, 1 + 4, 4);
+            Buffer.BlockCopy(BitConverter.GetBytes(sampleRate), 0, header, 1 + 4 + 4, 4);
+            Buffer.BlockCopy(BitConverter.GetBytes(channels), 0, header, 1 + 4 + 4 + 4, 4);
+
+            var lobbyOpt = SteamLobbyHelper.CurrentLobby;
+            if (!lobbyOpt.HasValue || !lobbyOpt.Value.Id.IsValid)
+            {
+                Debug.LogWarning("[LakakaSpeaker] Pas de lobby courant valide");
+                return;
+            }
+            Lobby lobby = lobbyOpt.Value;
+
+            foreach (var member in lobby.Members)
+            {
+                SteamId memberSid = member.Id;
+                if (memberSid == Steamworks.SteamClient.SteamId) continue;
+                bool sent = SteamNetworking.SendP2PPacket(memberSid, header, header.Length, nChannel: 0, P2PSend.Reliable);
+                if (!sent)
+                {
+                    L.LogWarning($"[LakakaSpeaker] Échec envoi header audio clip {clipId} à {member.Id}");
+                }
+            }
+        }
+
+
+        private void HandleIncomingPacket(SteamId sender, byte[] data)
+        {
+            if (data == null || data.Length == 0) return;
+            byte messageType = data[0];
+
+            switch (messageType)
+            {
+                case AUDIO_HEADER:
+                    {
+                        // data length doit être >= 1+4+4+4+4 = 17
+                        if (data.Length < 1 + 4 + 4 + 4 + 4)
+                        {
+                            L.LogWarning("[LakakaSpeaker] Header audio invalide reçu");
+                            return;
+                        }
+                        int clipId = BitConverter.ToInt32(data, 1);
+                        int totalBytes = BitConverter.ToInt32(data, 1 + 4);
+                        int sampleRate = BitConverter.ToInt32(data, 1 + 4 + 4);
+                        int channels = BitConverter.ToInt32(data, 1 + 4 + 4 + 4);
+
+                        int totalChunks = Mathf.CeilToInt((float)totalBytes / CHUNK_SIZE);
+                        var buf = new ClipReceiveBuffer
+                        {
+                            TotalBytes = totalBytes,
+                            SampleRate = sampleRate,
+                            Channels = channels,
+                            TotalChunks = totalChunks,
+                            Chunks = new byte[totalChunks][],
+                            ReceivedCount = 0
+                        };
+                        receiveBuffers[clipId] = buf;
+                        L.LogInfo($"[LakakaSpeaker] Header audio reçu pour clip {clipId}, totalBytes={totalBytes}, sampleRate={sampleRate}, channels={channels}, totalChunks={totalChunks}");
+                    }
+                    break;
+
+                case AUDIO_CHUNK:
+                    {
+                        // data length doit être >= 1+4+4 = 9
+                        if (data.Length < 1 + 4 + 4)
+                        {
+                            L.LogWarning("[LakakaSpeaker] Chunk audio invalide reçu");
+                            return;
+                        }
+                        int clipId = BitConverter.ToInt32(data, 1);
+                        int chunkIndex = BitConverter.ToInt32(data, 1 + 4);
+                        if (!receiveBuffers.TryGetValue(clipId, out var buffer))
+                        {
+                            L.LogWarning($"[LakakaSpeaker] Chunk reçu pour clip inconnu {clipId}");
+                            return;
+                        }
+                        int payloadOffset = 1 + 4 + 4;
+                        int payloadLength = data.Length - payloadOffset;
+                        if (payloadLength <= 0)
+                        {
+                            L.LogWarning($"[LakakaSpeaker] Chunk vide reçu pour clip {clipId}, index {chunkIndex}");
+                            return;
+                        }
+                        // Stocker chunk
+                        if (chunkIndex < 0 || chunkIndex >= buffer.TotalChunks)
+                        {
+                            L.LogWarning($"[LakakaSpeaker] Chunk index hors limites: {chunkIndex} (totalChunks={buffer.TotalChunks}) pour clip {clipId}");
+                            return;
+                        }
+                        if (buffer.Chunks[chunkIndex] == null)
+                        {
+                            byte[] chunkData = new byte[payloadLength];
+                            Buffer.BlockCopy(data, payloadOffset, chunkData, 0, payloadLength);
+                            buffer.Chunks[chunkIndex] = chunkData;
+                            buffer.ReceivedCount++;
+                            // Optionnel: log réception partielle
+                            // L.LogInfo($"[LakakaSpeaker] Reçu chunk {chunkIndex}/{buffer.TotalChunks} pour clip {clipId}");
+                        }
+                        // Vérifier si on a tout reçu
+                        if (buffer.ReceivedCount >= buffer.TotalChunks)
+                        {
+                            // Reconstituer le byte[] complet
+                            byte[] allData = new byte[buffer.TotalBytes];
+                            for (int i = 0; i < buffer.TotalChunks; i++)
+                            {
+                                int copyOffset = i * CHUNK_SIZE;
+                                byte[] chunkBytes = buffer.Chunks[i];
+                                int len = chunkBytes.Length;
+                                Buffer.BlockCopy(chunkBytes, 0, allData, copyOffset, len);
+                            }
+                            // Convertir byte[] en float[] (suppose float 32-bit little-endian envoyé)
+                            int sampleCount = allData.Length / sizeof(float);
+                            float[] floatData = new float[sampleCount];
+                            Buffer.BlockCopy(allData, 0, floatData, 0, allData.Length);
+
+                            // Créer l’AudioClip et jouer
+                            AudioClip clip = AudioClip.Create($"received_clip_{clipId}", sampleCount / buffer.Channels, buffer.Channels, buffer.SampleRate, false);
+                            clip.SetData(floatData, 0);
+                            PlayReceivedClip(clip);
+
+                            receiveBuffers.Remove(clipId);
+                            L.LogInfo($"[LakakaSpeaker] Clip {clipId} reconstitué et joué.");
+                        }
+                    }
+                    break;
+
+                case NCS_URL:
+                    {
+                        // URL à partir de data[1..]
+                        string url = System.Text.Encoding.UTF8.GetString(data, 1, data.Length - 1);
+                        L.LogInfo($"[LakakaSpeaker] URL NCS reçue: {url}");
+                        // Démarrer téléchargement et lecture sur ce client
+                        StartCoroutine(PlayNcsUrlOnClient(url));
+                    }
+                    break;
+
+                default:
+                    L.LogWarning($"[LakakaSpeaker] Type de message P2P inconnu: {messageType}");
+                    break;
+            }
+        }
+
+
+        private void PlayReceivedClip(AudioClip clip)
+        {
+            var src = GetOrCreateAudioSource();
+            src.clip = clip;
+            src.loop = false;
+            src.volume = 0.8f;
+            src.Play();
+            // Gérer looper si voulu
+        }
+
+        private IEnumerator P2PPacket()
+        {
+            while (SteamNetworking.IsP2PPacketAvailable(channel: 0))
+            {
+                var packetOpt = SteamNetworking.ReadP2PPacket();
+                if (packetOpt.HasValue)
+                {
+                    var steamIdSender = packetOpt.Value.SteamId;
+                    var data = packetOpt.Value.Data;
+                    HandleIncomingPacket(steamIdSender, data);
+                }
+                yield return null;
+            }
+
+        }
+
+        #endregion
     }
 }
 
