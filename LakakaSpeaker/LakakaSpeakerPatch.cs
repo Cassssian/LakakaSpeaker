@@ -1,6 +1,9 @@
 ﻿using HarmonyLib;
+using REPOLib;
 using REPOLib.Modules;
 using System;
+using System.Collections;
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace LakakaSpeaker
@@ -45,71 +48,107 @@ namespace LakakaSpeaker
     {
         static bool Prefix(AudioSource __instance)
         {
-            if (__instance == null)
-                return true;
+            if (__instance == null) return true;
 
-            // 1) Bypass si Play interne du looper NCS
+            // Bypass interne (depuis NcsSpeakerLooper)
             if (NcsSpeakerLooper.ShouldBypass(__instance))
                 return true;
 
-            // 2) Cherche ValuableObject parent
             var valuable = __instance.gameObject.GetComponentInParent<ValuableObject>();
-            if (valuable == null)
+            if (valuable == null || !valuable.name.Contains("JBLSpeaker", StringComparison.OrdinalIgnoreCase))
                 return true;
 
             var instance = LakakaSpeaker.Instance;
             if (instance == null)
                 return true;
 
-            // Ne cibler que les objets dont le nom contient "JBLSpeaker"
-            if (!valuable.gameObject.name.Contains("JBLSpeaker", StringComparison.OrdinalIgnoreCase))
-                return true;
-
-            // Mode non-NCS : boucle aléatoire
-            if (!instance.IsNcsMode)
+            if (instance.IsNcsMode)
             {
-                AudioClip audioClip = instance.GetRandomClip();
-                if (audioClip != null)
+                var looper = __instance.GetComponentInParent<NcsSpeakerLooper>();
+                if (looper == null)
                 {
-                    __instance.playOnAwake = false;
-                    __instance.Stop();
-                    __instance.clip = audioClip;
-                    __instance.volume = 0.8f;
-                    __instance.loop = false;
-                    instance.L.LogInfo("🎵 [Play Prefix] '" + __instance.gameObject.name + "' -> clip: " + audioClip.name);
+                    looper = valuable.gameObject.AddComponent<NcsSpeakerLooper>();
+                    looper.Init(__instance);
+                    instance.L.LogInfo("[Patch] NcsSpeakerLooper ajouté dynamiquement.");
+                }
 
-                    if (__instance.gameObject.GetComponent<RandomMusicLooper>() == null)
+                if (!looper.IsStarted)
+                {
+                    if (HostDetector.IsCurrentPlayerHost())
                     {
-                        __instance.gameObject.AddComponent<RandomMusicLooper>();
-                        instance.L.LogInfo("🔁 RandomMusicLooper ajouté");
+                        if (looper.IsReady)
+                        {
+                            looper.StartLoopIfNeeded();
+                            instance.SendNcsUrlToAll_P2P(looper.CurrentUrl, Time.realtimeSinceStartup + 3f);
+                            instance.L.LogInfo($"[Patch] Lecture immédiate avec clip déjà prêt (url={looper.CurrentUrl})");
+                        }
+                        else
+                        {
+                            looper.MarkPendingStart(); // À créer : _pendingStart = true;
+                            instance.L.LogInfo("[Patch] Clip pas encore prêt, attente différée");
+                        }
+                    }
+                    else
+                    {
+                        instance.L.LogInfo("[Patch] Client a cliqué, attente NCS_SYNC de l’hôte.");
                     }
                 }
-                else
-                {
-                    instance.L.LogWarning("RandomMusicLooper: aucun clip aléatoire disponible.");
-                }
-                // Intercepte Play pour JBLSpeaker hors NCS
+
                 return false;
             }
             else
             {
-                // Mode NCS
-                var looper = __instance.GetComponentInParent<NcsSpeakerLooper>();
-                if (looper == null)
+                if (HostDetector.IsCurrentPlayerHost())
                 {
-                    instance.L.LogWarning($"[Patch] NcsSpeakerLooper non trouvé sur '{valuable.gameObject.name}' au Play. Ajout dynamique.");
-                    looper = valuable.gameObject.AddComponent<NcsSpeakerLooper>();
-                    looper.Init(__instance);
+                    var clip = instance.GetRandomClip();
+                    if (clip != null)
+                    {
+                        int clipId = instance.ReserveNextClipId();
+                        float[] samples = new float[clip.samples * clip.channels];
+                        clip.GetData(samples, 0);
+                        byte[] data = new byte[samples.Length * sizeof(float)];
+                        Buffer.BlockCopy(samples, 0, data, 0, data.Length);
+
+                        float startTime = Time.realtimeSinceStartup + 3f;
+
+                        instance.SendClipHeader_P2P(clipId, data.Length, clip.frequency, clip.channels);
+                        instance.SendAllChunksForClip_P2P(clipId, data);
+                        instance.SendAudioSyncToAll(clipId, startTime);
+
+                        __instance.clip = clip;
+                        __instance.volume = 0.8f;
+                        __instance.loop = false;
+
+                        RandomMusicLooper looper = __instance.gameObject.GetComponent<RandomMusicLooper>();
+                        if (looper == null)
+                            __instance.gameObject.AddComponent<RandomMusicLooper>();
+
+                        NcsSpeakerLooper.MarkNextPlay(__instance);
+                        instance.L.LogInfo($"[Patch] Lancement custom synchro à {startTime:F2}s clip='{clip.name}'");
+
+                        instance.StartCoroutine(PlayDelayed(__instance, startTime));
+                    }
                 }
-                if (!looper.IsStarted)
+                else
                 {
-                    looper.StartLoopIfNeeded();
-                    instance.L.LogInfo($"[Patch] Démarrage du loop NCS pour '{valuable.gameObject.name}'.");
+                    instance.L.LogInfo("[Patch] Client a cliqué sur enceinte en mode custom, ignoré.");
                 }
-                // Une fois démarré, on bloque tout Play manuel ultérieur pour éviter de perturber la boucle.
+
                 return false;
             }
         }
+
+        private static IEnumerator PlayDelayed(AudioSource src, float startTime)
+        {
+            float delay = startTime - Time.realtimeSinceStartup;
+            if (delay > 0)
+                yield return new WaitForSeconds(delay);
+            else
+                LakakaSpeaker.Instance.L.LogWarning("[Patch] Retardé : lecture immédiate clip local.");
+
+            src.Play();
+        }
+    }
 
         /// <summary>
         /// Patch pour ajouter le NcsSpeakerLooper dès Awake du ValuableObject si le mode NCS est déjà actif.
@@ -136,4 +175,3 @@ namespace LakakaSpeaker
             }
         }
     }
-}

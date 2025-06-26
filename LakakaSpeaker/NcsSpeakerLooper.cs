@@ -1,8 +1,9 @@
-﻿using System.Collections;
+﻿using System;
+using System.Collections;
 using System.Collections.Generic;
+using System.IO;
 using UnityEngine;
 using UnityEngine.Networking;
-using System.IO;
 
 namespace LakakaSpeaker
 {
@@ -30,6 +31,8 @@ namespace LakakaSpeaker
 
         public bool IsStarted => _started;
         public bool IsReady => _firstReady;
+
+        public string CurrentUrl => _currentClip != null ? _currentClip.name : _nextUrl;
 
         /// <summary>
         /// Initialise le looper avec l'AudioSource donnée. Lance la préparation des deux premiers clips.
@@ -72,27 +75,25 @@ namespace LakakaSpeaker
                 if (string.IsNullOrEmpty(url1))
                     break;
                 _plugin.L.LogInfo($"[NcsSpeakerLooper] Téléchargement initial NCS: {url1}");
-                using (UnityWebRequest uwr = UnityWebRequestMultimedia.GetAudioClip(url1, AudioType.MPEG))
+                using UnityWebRequest uwr = UnityWebRequestMultimedia.GetAudioClip(url1, AudioType.MPEG);
+                yield return uwr.SendWebRequest();
+                if (uwr.result == UnityWebRequest.Result.Success)
                 {
-                    yield return uwr.SendWebRequest();
-                    if (uwr.result == UnityWebRequest.Result.Success)
+                    var clipTmp = DownloadHandlerAudioClip.GetContent(uwr);
+                    if (clipTmp != null && clipTmp.length > 0.1f)
                     {
-                        var clipTmp = DownloadHandlerAudioClip.GetContent(uwr);
-                        if (clipTmp != null && clipTmp.length > 0.1f)
-                        {
-                            clipTmp.name = Path.GetFileNameWithoutExtension(url1);
-                            _currentClip = clipTmp;
-                            break;
-                        }
-                        else
-                        {
-                            _plugin.L.LogWarning($"[NcsSpeakerLooper] Clip invalide ou trop court: {url1}");
-                        }
+                        clipTmp.name = Path.GetFileNameWithoutExtension(url1);
+                        _currentClip = clipTmp;
+                        break;
                     }
                     else
                     {
-                        _plugin.L.LogError($"[NcsSpeakerLooper] Erreur téléchargement initial: {uwr.error} (URL: {url1})");
+                        _plugin.L.LogWarning($"[NcsSpeakerLooper] Clip invalide ou trop court: {url1}");
                     }
+                }
+                else
+                {
+                    _plugin.L.LogError($"[NcsSpeakerLooper] Erreur téléchargement initial: {uwr.error} (URL: {url1})");
                 }
             }
             if (_currentClip == null)
@@ -141,88 +142,89 @@ namespace LakakaSpeaker
         {
             while (_currentClip != null)
             {
-                // Configure et joue le clip courant
+                // Configuration du AudioSource
                 _src.playOnAwake = false;
                 _src.Stop();
                 _src.clip = _currentClip;
                 _src.volume = 0.8f;
                 _src.loop = false;
-                _plugin.L.LogInfo($"[NcsSpeakerLooper] ▶️ Lecture: {_currentClip.name}");
-                // Bypass l’interception du prefix Harmony
+
+                // Affichage du log « Lecture en cours -> Artiste – Titre »
+                if (_plugin.ncsTrackNamesByUrl.TryGetValue(_currentClip.name, out var display))
+                    _plugin.L.LogInfo($"Lecture en cours -> {display}");
+                else
+                    _plugin.L.LogInfo($"Lecture en cours -> {_currentClip.name}");
+
+                // Bypass de Harmony et démarrage
                 MarkNextPlay(_src);
                 _src.Play();
 
-                // Préparer le prochain pendant la lecture si non déjà prêt
+                // Pré-téléchargement du suivant si nécessaire
                 if (_nextClip == null)
                 {
-                    string nextUrlTmp = GetNextNcsUrl();
-                    if (!string.IsNullOrEmpty(nextUrlTmp))
-                    {
-                        yield return StartCoroutine(DownloadNextClip(nextUrlTmp, clip => _nextClip = clip));
-                    }
+                    string nextUrl = GetNextNcsUrl();
+                    if (!string.IsNullOrEmpty(nextUrl))
+                        yield return StartCoroutine(DownloadNextClip(nextUrl, clip => _nextClip = clip));
                 }
 
-                // Attendre la fin de la lecture
-                float clipLength = _src.clip.length;
-                // Si isPlaying ne devient jamais true, on peut sortir de la boucle après un timeout ou log d’erreur
+                // Attente de la fin du morceau
+                float clipLen = _src.clip.length;
                 float waited = 0f;
-                const float maxWaitExtra = 300f; // sécurité, 5 minutes max
-                while (_src.isPlaying && _src.time < clipLength - 0.05f)
+                const float maxExtra = 300f;
+                while (_src.isPlaying && _src.time < clipLen - 0.05f)
                 {
                     yield return null;
                     waited += Time.deltaTime;
-                    if (waited > clipLength + maxWaitExtra)
+                    if (waited > clipLen + maxExtra)
                     {
-                        _plugin.L.LogError("[NcsSpeakerLooper] Lecture bloquée ou trop longue, sortie de la boucle.");
+                        _plugin.L.LogError("[NcsSpeakerLooper] Lecture bloquée, arrêt de la boucle.");
                         break;
                     }
                 }
-                // Si isPlaying resté false (Play bloqué ou autre), on log et on peut décider de retenter ou d’abandonner
-                if (!_src.isPlaying)
-                {
-                    _plugin.L.LogWarning("[NcsSpeakerLooper] Clip n'a pas démarré la lecture. Fin de la boucle ou passage au suivant ?");
-                    // Dans ce cas, pour éviter boucle infinie: on peut break ou essayer le suivant. Ici, on choisit de tenter le suivant.
-                }
-                // Petit délai de sécurité pour éviter enchaînements trop rapides
+
+                // Petit délai
                 yield return new WaitForSeconds(0.1f);
 
-                // Passe au suivant
+                // Passage au morceau suivant
                 _currentClip = _nextClip;
                 _nextClip = null;
                 _nextUrl = null;
             }
-            _plugin.L.LogInfo("[NcsSpeakerLooper] Tous les morceaux NCS ont été joués (fin de la playlist).");
+
+            _plugin.L.LogInfo("[NcsSpeakerLooper] Fin de la playlist NCS.");
         }
 
         /// <summary>
         /// Télécharge un clip depuis URL, valide qu'il n'est pas null et a une durée > 0.1s.
         /// Appelle onReady(clip) ou onReady(null) si invalide.
         /// </summary>
-        private IEnumerator DownloadNextClip(string url, System.Action<AudioClip> onReady)
+        private IEnumerator DownloadNextClip(string url, Action<AudioClip> onReady)
         {
             _plugin.L.LogInfo($"[NcsSpeakerLooper] Téléchargement NCS: {url}");
-            using (UnityWebRequest uwr = UnityWebRequestMultimedia.GetAudioClip(url, AudioType.MPEG))
+            using var uwr = UnityWebRequestMultimedia.GetAudioClip(url, AudioType.MPEG);
+            yield return uwr.SendWebRequest();
+
+            if (uwr.result == UnityWebRequest.Result.Success)
             {
-                yield return uwr.SendWebRequest();
-                if (uwr.result == UnityWebRequest.Result.Success)
+                var clip = DownloadHandlerAudioClip.GetContent(uwr);
+                if (clip != null && clip.length > 0.1f)
                 {
-                    var clip = DownloadHandlerAudioClip.GetContent(uwr);
-                    if (clip != null && clip.length > 0.1f)
-                    {
-                        clip.name = Path.GetFileNameWithoutExtension(url);
-                        onReady(clip);
-                        yield break;
-                    }
-                    else
-                    {
-                        _plugin.L.LogWarning($"[NcsSpeakerLooper] Clip téléchargé invalide ou trop court : {url}");
-                    }
+                    string key = Path.GetFileNameWithoutExtension(url);
+                    clip.name = key;
+                    _plugin.L.LogInfo($"[NcsSpeakerLooper] Clip prêt : {key}");
+                    onReady(clip);
+                    yield break;
                 }
                 else
                 {
-                    _plugin.L.LogError($"[NcsSpeakerLooper] Erreur téléchargement: {uwr.error} (URL: {url})");
+                    _plugin.L.LogWarning($"[NcsSpeakerLooper] Clip invalide ou trop court : {url}");
                 }
             }
+            else
+            {
+                _plugin.L.LogError($"[NcsSpeakerLooper] Erreur téléchargement: {uwr.error} (URL: {url})");
+            }
+
             onReady(null);
         }
 
@@ -238,7 +240,7 @@ namespace LakakaSpeaker
             }
             if (_remainingUrls == null || _remainingUrls.Count == 0)
                 return null;
-            int idx = Random.Range(0, _remainingUrls.Count);
+            int idx = UnityEngine.Random.Range(0, _remainingUrls.Count);
             string url = _remainingUrls[idx];
             _remainingUrls.RemoveAt(idx);
             return url;
@@ -247,7 +249,7 @@ namespace LakakaSpeaker
         /// <summary>
         /// Marque l’AudioSource pour bypasser le patch Harmony lors du prochain Play().
         /// </summary>
-        private static void MarkNextPlay(AudioSource src)
+        public static void MarkNextPlay(AudioSource src)
         {
             if (src != null)
                 _bypassSet.Add(src);
@@ -265,5 +267,58 @@ namespace LakakaSpeaker
             }
             return false;
         }
+
+        public void StartLoopWithUrl(string url, float targetTime)
+        {
+            _plugin.L.LogInfo($"[NcsLooper] Démarrage avec synchro : {url} à {targetTime:F2}");
+            StartCoroutine(DownloadThenStart(url, targetTime));
+        }
+
+        private IEnumerator DownloadThenStart(string url, float startTime)
+        {
+            _plugin.L.LogInfo($"[NcsLooper] Téléchargement pour synchro : {url}");
+            AudioClip clip = null;
+
+            using (var uwr = UnityWebRequestMultimedia.GetAudioClip(url, AudioType.MPEG))
+            {
+                yield return uwr.SendWebRequest();
+                if (uwr.result == UnityWebRequest.Result.Success)
+                    clip = DownloadHandlerAudioClip.GetContent(uwr);
+                else
+                    _plugin.L.LogError($"[NcsLooper] Erreur téléchargement sync: {uwr.error}");
+            }
+
+            if (clip == null || clip.length <= 0.1f)
+            {
+                _plugin.L.LogWarning($"[NcsLooper] Clip invalide ou trop court (url={url})");
+                yield break;
+            }
+
+            // Renommage
+            string key = Path.GetFileNameWithoutExtension(url);
+            clip.name = key;
+
+            // Préparation et attente
+            _currentClip = clip;
+            _started = true;
+            float wait = startTime - Time.realtimeSinceStartup;
+            if (wait > 0f) yield return new WaitForSeconds(wait);
+            else _plugin.L.LogWarning($"[NcsLooper] Retard détecté ({-wait:F2}s), lecture immédiate.");
+
+            // Lecture
+            MarkNextPlay(_src);
+            _src.clip = _currentClip;
+            _src.volume = 0.8f;
+            _src.loop = false;
+            _src.Play();
+            _plugin.L.LogInfo($"Lecture synchronisée -> {_plugin.ncsTrackNamesByUrl.GetValueOrDefault(key, key)}");
+        }
+
+
+        public void MarkPendingStart()
+        {
+            _pendingStart = true;
+        }
+
     }
 }

@@ -1,12 +1,10 @@
 ﻿using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
-using ExitGames.Client.Photon;
 using HarmonyLib;
 using MenuLib;               // pour MenuAPI, REPOPopupPage, REPOButton, REPOInputField, etc.
 using MenuLib.MonoBehaviors; // pour accéder à MenuManager.instance.StartCoroutine(...)
 using MenuLib.Structs;      // pour la structure Padding
-using Photon.Realtime;
 using REPOLib.Modules;
 using Steamworks;
 using Steamworks.Data;
@@ -32,7 +30,7 @@ namespace LakakaSpeaker
     {
         public string id;
         public string title;
-        public string artist;
+        public NcsArtist[] artist;
         public string previewUrl;   // URL du .mp3 (ou autre)  
         public string coverUrl;
         public int duration;
@@ -43,6 +41,14 @@ namespace LakakaSpeaker
         public string youtubeUrl;
         public string type;
     }
+
+    [Serializable]
+    public class NcsArtist
+    {
+        public string name;
+        public string url;
+    }
+
 
     // Wrapper pour JsonUtility
     [Serializable]
@@ -75,8 +81,8 @@ namespace LakakaSpeaker
         // Classe interne pour buffer audio
         private class MusicBuffer
         {
-            private Dictionary<int, byte[]> chunks = new Dictionary<int, byte[]>();
-            private int expectedChunks;
+            private readonly Dictionary<int, byte[]> chunks = new Dictionary<int, byte[]>();
+            private readonly int expectedChunks;
             public bool IsComplete => chunks.Count == expectedChunks;
 
             public void StoreChunk(int index, byte[] data)
@@ -131,6 +137,8 @@ namespace LakakaSpeaker
         internal static REPOButton lastClickedfolderButton;
         private static bool hasPopupMenuOpened;
         private static readonly Dictionary<ConfigEntryBase, object> originalEntryValues = new Dictionary<ConfigEntryBase, object>();
+        private int _nextClipId = 0;
+        public int ReserveNextClipId() => _nextClipId++;
 
 
 
@@ -138,19 +146,15 @@ namespace LakakaSpeaker
         /// <summary>
         /// NCS URLs pour les musiques NCS (No Copyright Sounds).
         /// </summary>
-        internal List<string> ncsUrls = new List<string>();
         private ConfigEntry<bool> ncsTrackPlayEntry;
+        internal List<string> ncsUrls = new List<string>();
+        internal Dictionary<string, string> ncsTrackNamesByUrl = new Dictionary<string, string>();
         public bool IsNcsMode => ncsTrackPlayEntry?.Value ?? false;
         #endregion
 
 
         #region Partage client-serveur
-        private class IncomingFile
-        {
-            public List<byte[]> Chunks = new List<byte[]>();
-            public int ExpectedChunks;
-            public int ReceivedChunks;
-        }
+
         private Dictionary<int, MusicBuffer> MusicBuffers = new Dictionary<int, MusicBuffer>();
         private NetworkedEvent _chunkEvent;
         private NetworkedEvent _ncsUrlEvent;
@@ -159,6 +163,8 @@ namespace LakakaSpeaker
         private const int AUDIO_CHUNK = 1;
         private const int NCS_URL = 2;
         private const int NCS_REQUEST = 3;
+        private const int AUDIO_SYNC = 4;
+        private const int NCS_SYNC = 5;
 
         private const int CHUNK_SIZE = 1000;
         private Dictionary<int, ClipReceiveBuffer> receiveBuffers = new Dictionary<int, ClipReceiveBuffer>();
@@ -209,7 +215,7 @@ namespace LakakaSpeaker
         {
             object obj = typeof(LakakaSpeaker).GetCustomAttributes(typeof(BepInPlugin), inherit: false)[0];
             BepInPlugin val = (BepInPlugin)((obj is BepInPlugin) ? obj : null);
-            return ((val != null) ? val.Name : null) ?? "LakakaSpeaker";
+            return (val?.Name) ?? "LakakaSpeaker";
         }
 
 
@@ -278,18 +284,25 @@ namespace LakakaSpeaker
             string jsonUrl = "https://raw.githubusercontent.com/Cassssian/LakakaSpeaker/refs/heads/master/LakakaSpeaker/ncs_music_link.json";
             StartCoroutine(LoadNcsUrlsOnly(jsonUrl));
             StartCoroutine(LoadAllClips());
+            
+            SteamNetworking.OnP2PSessionRequest = (SteamId remote) =>
+                {
+                    SteamNetworking.AcceptP2PSessionWithUser(remote);
+                    L.LogInfo($"[LakakaSpeaker] P2P session request accepted from {remote.Value}");
+                };
 
+                SteamNetworking.OnP2PConnectionFailed = (SteamId remote, P2PSessionError error) =>
+                {
+                    L.LogWarning($"[LakakaSpeaker] P2P connection failed with {remote.Value}, erreur: {error}");
+                };
+            
+            
             try
             {
                 // Dans le Main Menu
                 MenuAPI.AddElementToMainMenu(parent =>
                 {
-                    MenuAPI.CreateREPOButton("Lakaka", CreateLakakaFolderMenu, parent, new Vector2(120f, 55.5f));
-                });
-                //Dans le Lobby Menu
-                MenuAPI.AddElementToLobbyMenu(parent =>
-                {
-                    MenuAPI.CreateREPOButton("Lakaka", CreateLakakaFolderMenuLobby, parent, new Vector2(186f, 65f));
+                    MenuAPI.CreateREPOButton("Lakaka", CreateLakakaFolderMenu, parent, new Vector2(200f, 30f)).labelTMP.fontSize = 28f;
                 });
                 // Dans le Escape Menu
                 //MenuAPI.AddElementToEscapeMenu(parent =>
@@ -302,28 +315,17 @@ namespace LakakaSpeaker
                 L.LogError($"[LakakaSpeaker] Impossible d'ajouter le bouton REPO “Lakaka” : {ex}");
             }
 
-            _ncsUrlEvent = new NetworkedEvent(
-            "LakakaSpeaker_NcsUrl",
-            (EventData data) =>
-            {
-                string url = data.CustomData as string;
-                if (!string.IsNullOrEmpty(url))
-                {
-                    StartCoroutine(PlayNcsUrlOnClient(url));
-                }
-            }
-        );
 
-            SteamNetworking.OnP2PSessionRequest = (SteamId remote) =>
+            SteamMatchmaking.OnLobbyEntered += (Lobby lobby) =>
             {
-                SteamNetworking.AcceptP2PSessionWithUser(remote);
-                L.LogInfo($"[LakakaSpeaker] P2P session request accepted from {remote.Value}");
+                L.LogInfo($"[LakakaSpeaker] ✅ OnLobbyEntered: {lobby.Id}");
+                SteamLobbyHelper.SetCurrentLobby(lobby);
             };
 
-            SteamNetworking.OnP2PConnectionFailed = (SteamId remote, P2PSessionError error) =>
-            {
-                L.LogWarning($"[LakakaSpeaker] P2P connection failed with {remote.Value}, erreur: {error}");
-            };
+
+            StartCoroutine(EnsureLobbyFallback());
+
+
         }
 
 
@@ -872,7 +874,7 @@ namespace LakakaSpeaker
                 {
                     string fileName = Path.GetFileNameWithoutExtension(file);
                     string safeFileName = Instance.SanitizeConfigKey(fileName);
-                    ConfigDefinition configDef = new ConfigDefinition("Music Folder", safeFileName);
+                    _ = new ConfigDefinition("Music Folder", safeFileName);
                     ConfigEntryBase configEntry = Instance.Config.Bind<bool>(
                         "Music Folder",
                         safeFileName,
@@ -908,7 +910,7 @@ namespace LakakaSpeaker
                 {
                     string fileName = Path.GetFileNameWithoutExtension(file);
                     string safeFileName = Instance.SanitizeConfigKey(fileName);
-                    ConfigDefinition configDef = new ConfigDefinition("Music Folder", safeFileName);
+                    _ = new ConfigDefinition("Music Folder", safeFileName);
                     ConfigEntryBase configEntry = Instance.Config.Bind<bool>(
                         "Music Folder",
                         safeFileName,
@@ -951,7 +953,7 @@ namespace LakakaSpeaker
             {
                 string text2 = text;
                 int num2 = num + 1;
-                return text2.Substring(num2, text2.Length - num2).Length;
+                return text2[num2..].Length;
             }
             return 0;
         }
@@ -962,7 +964,7 @@ namespace LakakaSpeaker
         #region Partie NCS
         private IEnumerator LoadNcsUrlsOnly(string jsonUrl)
         {
-            using UnityWebRequest uwr = UnityWebRequest.Get(jsonUrl);
+            using var uwr = UnityWebRequest.Get(jsonUrl);
             yield return uwr.SendWebRequest();
 
             if (uwr.result != UnityWebRequest.Result.Success)
@@ -971,11 +973,9 @@ namespace LakakaSpeaker
                 yield break;
             }
 
-            // On entoure le JSON pour que JsonUtility sache désérialiser
+            // Désérialisation
             string rawJson = uwr.downloadHandler.text;
-            //string wrappedJson = "{\"tracks\":" + rawJson + "}";
-            NcsTrackList list = JsonUtility.FromJson<NcsTrackList>(rawJson);
-
+            var list = JsonUtility.FromJson<NcsTrackList>(rawJson);
             if (list == null || list.tracks == null)
             {
                 L.LogError("Parsing du JSON NCS a échoué ou liste vide.");
@@ -984,11 +984,31 @@ namespace LakakaSpeaker
 
             L.LogInfo($"🔽 {list.tracks.Count} musiques NCS détectées dans le JSON.");
 
-            // On remplit uniquement la liste d’URLs (previewUrl)
+            // Réinitialisation des collections
+            ncsUrls.Clear();
+            ncsTrackNamesByUrl.Clear();
+
             foreach (var t in list.tracks)
             {
-                if (!string.IsNullOrEmpty(t.previewUrl))
-                    ncsUrls.Add(t.previewUrl);
+                string url = t.previewUrl;
+                if (string.IsNullOrEmpty(url))
+                    continue;
+
+                // On garde l'URL pour le looper
+                ncsUrls.Add(url);
+
+                // Clé = nom de fichier sans extension
+                string key = Path.GetFileNameWithoutExtension(url);
+
+                // Extraction artiste et titre
+                string artist = (t.artist != null && t.artist.Length > 0)
+                                ? t.artist[0].name
+                                : "Inconnu";
+                string title = !string.IsNullOrEmpty(t.title)
+                                ? t.title
+                                : t.id;
+
+                ncsTrackNamesByUrl[key] = $"{artist} - {title}";
             }
 
             L.LogInfo($"✅ {ncsUrls.Count} URLs NCS stockées pour usage ultérieur.");
@@ -997,32 +1017,23 @@ namespace LakakaSpeaker
         /// <summary>
         /// Envoie aux pairs l’URL d’une musique NCS afin qu’ils téléchargent et jouent localement.
         /// </summary>
-        private void SendNcsUrlToAll_P2P(string url)
+        public void SendNcsUrlToAll_P2P(string url, float startTime)
         {
-            if (!HostDetector.IsLocalPlayerHost()) return;
             byte[] urlBytes = System.Text.Encoding.UTF8.GetBytes(url);
-            byte[] packet = new byte[1 + urlBytes.Length];
-            packet[0] = NCS_URL;
-            Buffer.BlockCopy(urlBytes, 0, packet, 1, urlBytes.Length);
+            byte[] packet = new byte[1 + 4 + urlBytes.Length];
+            packet[0] = NCS_SYNC;
+            Buffer.BlockCopy(BitConverter.GetBytes(startTime), 0, packet, 1, 4);
+            Buffer.BlockCopy(urlBytes, 0, packet, 5, urlBytes.Length);
 
-            var lobbyOpt = SteamLobbyHelper.CurrentLobby;
-            if (!lobbyOpt.HasValue || !lobbyOpt.Value.Id.IsValid)
+            var lobby = SteamLobbyHelper.CurrentLobby;
+            if (!lobby.HasValue || !lobby.Value.Id.IsValid) return;
+
+            foreach (var member in lobby.Value.Members)
             {
-                Debug.LogWarning("[LakakaSpeaker] Pas de lobby courant valide");
-                return;
-            }
-            Lobby lobby = lobbyOpt.Value;
-            foreach (var member in lobby.Members)
-            {
-                SteamId memberSid = member.Id;
-                if (memberSid == SteamClient.SteamId) continue;
-                SteamNetworking.SendP2PPacket(memberSid, packet, packet.Length, nChannel: 0, P2PSend.Reliable);
+                if (member.Id == SteamClient.SteamId) continue;
+                SteamNetworking.SendP2PPacket(member.Id, packet, packet.Length, 0, P2PSend.Reliable);
             }
         }
-
-
-
-
 
         private IEnumerator PlayNcsUrlOnClient(string url)
         {
@@ -1063,9 +1074,9 @@ namespace LakakaSpeaker
         /// <summary>
         /// Découpe dataBytes en chunks et envoie chaque chunk aux pairs.
         /// </summary>
-        private void SendAllChunksForClip_P2P(int clipId, byte[] dataBytes)
+        public void SendAllChunksForClip_P2P(int clipId, byte[] dataBytes)
         {
-            if (!HostDetector.IsLocalPlayerHost()) return;
+            if (!HostDetector.IsCurrentPlayerHost()) return;
 
             var lobbyOpt = SteamLobbyHelper.CurrentLobby;
             if (!lobbyOpt.HasValue || !lobbyOpt.Value.Id.IsValid)
@@ -1104,13 +1115,12 @@ namespace LakakaSpeaker
         }
 
 
-
         /// <summary>
         /// Envoie aux pairs le header d’un clip audio : clipId, totalBytes, sampleRate, channels.
         /// </summary>
-        private void SendClipHeader_P2P(int clipId, int totalBytes, int sampleRate, int channels)
+        public void SendClipHeader_P2P(int clipId, int totalBytes, int sampleRate, int channels)
         {
-            if (!HostDetector.IsLocalPlayerHost()) return;
+            if (!HostDetector.IsCurrentPlayerHost()) return;
 
             // messageType (1 byte) + clipId (4) + totalBytes (4) + sampleRate (4) + channels (4) = 17 bytes
             byte[] header = new byte[1 + 4 + 4 + 4 + 4];
@@ -1251,6 +1261,62 @@ namespace LakakaSpeaker
                     }
                     break;
 
+                case AUDIO_SYNC:
+                    {
+                        if (data.Length < 1 + 4 + 4)
+                        {
+                            L.LogWarning("[LakakaSpeaker] AUDIO_SYNC invalide.");
+                            break;
+                        }
+
+                        int clipId = BitConverter.ToInt32(data, 1);
+                        float startTime = BitConverter.ToSingle(data, 5);
+                        L.LogInfo($"[AUDIO_SYNC] Clip ID: {clipId}, start at: {startTime:F2}");
+
+                        if (!receiveBuffers.TryGetValue(clipId, out var buffer))
+                        {
+                            L.LogWarning($"[AUDIO_SYNC] Clip {clipId} pas encore téléchargé. Attente passive.");
+                            // Le Play se fera automatiquement dans HandleIncomingPacket une fois tous les chunks reçus
+                            // En option, tu peux marquer le startTime dans un dictionnaire
+                            break;
+                        }
+
+                        // Sinon, jouer immédiatement (il est arrivé avant le SYNC)
+                        StartCoroutine(PlayClipAtTime(buffer, clipId, startTime));
+                        break;
+                    }
+
+                case NCS_SYNC:
+                    {
+                        if (data.Length < 5)
+                        {
+                            L.LogWarning("[LakakaSpeaker] NCS_SYNC invalide.");
+                            break;
+                        }
+
+                        float startTime = BitConverter.ToSingle(data, 1);
+                        string url = System.Text.Encoding.UTF8.GetString(data, 5, data.Length - 5);
+                        L.LogInfo($"[NCS_SYNC] URL: {url}, startTime: {startTime:F2}");
+
+                        // Cherche une enceinte JBL
+                        var speaker = GameObject.FindObjectsOfType<ValuableObject>()
+                            .FirstOrDefault(x => x.name.Contains("JBLSpeaker", StringComparison.OrdinalIgnoreCase));
+                        if (speaker != null)
+                        {
+                            var looper = speaker.GetComponent<NcsSpeakerLooper>() ?? speaker.gameObject.AddComponent<NcsSpeakerLooper>();
+                            var src = speaker.GetComponentInChildren<AudioSource>();
+                            looper.Init(src);
+                            looper.StartLoopWithUrl(url, startTime);
+                        }
+                        else
+                        {
+                            L.LogWarning("[NCS_SYNC] Aucun JBL Speaker trouvé pour jouer le son.");
+                        }
+
+                        break;
+                    }
+
+
                 default:
                     L.LogWarning($"[LakakaSpeaker] Type de message P2P inconnu: {messageType}");
                     break;
@@ -1283,6 +1349,73 @@ namespace LakakaSpeaker
             }
 
         }
+
+        public void SendAudioSyncToAll(int clipId, float startTime)
+        {
+            byte[] packet = new byte[1 + 4 + 4];
+            packet[0] = AUDIO_SYNC;
+            Buffer.BlockCopy(BitConverter.GetBytes(clipId), 0, packet, 1, 4);
+            Buffer.BlockCopy(BitConverter.GetBytes(startTime), 0, packet, 5, 4);
+
+            var lobbyOpt = SteamLobbyHelper.CurrentLobby;
+            if (!lobbyOpt.HasValue || !lobbyOpt.Value.Id.IsValid) return;
+
+            foreach (var member in lobbyOpt.Value.Members)
+            {
+                if (member.Id == SteamClient.SteamId) continue;
+                SteamNetworking.SendP2PPacket(member.Id, packet, packet.Length, 0, P2PSend.Reliable);
+            }
+        }
+
+        private IEnumerator PlayClipAtTime(ClipReceiveBuffer buffer, int clipId, float startTime)
+        {
+            float[] floatData = new float[buffer.TotalBytes / sizeof(float)];
+            int totalSamples = floatData.Length / buffer.Channels;
+            Buffer.BlockCopy(buffer.Chunks.SelectMany(c => c).ToArray(), 0, floatData, 0, buffer.TotalBytes);
+
+            AudioClip clip = AudioClip.Create($"sync_clip_{clipId}", totalSamples, buffer.Channels, buffer.SampleRate, false);
+            clip.SetData(floatData, 0);
+
+            var src = GetOrCreateAudioSource();
+            src.clip = clip;
+            src.volume = 0.8f;
+            src.loop = false;
+
+            float delay = startTime - Time.realtimeSinceStartup;
+            if (delay > 0)
+                yield return new WaitForSeconds(delay);
+            else
+                L.LogWarning($"[PlayClipAtTime] Retard détecté de {-delay:F2}s, lecture immédiate.");
+
+            src.Play();
+            receiveBuffers.Remove(clipId);
+        }
+
+        private IEnumerator EnsureLobbyFallback()
+        {
+            yield return new WaitForSeconds(1.5f); // laisse Steam init
+
+            if (!SteamLobbyHelper.CurrentLobby.HasValue && SteamLobbyHelper.CurrentLobbyId != 0)
+            {
+                SteamId sid = SteamLobbyHelper.CurrentLobbyId;
+                var task = SteamMatchmaking.JoinLobbyAsync(sid);
+
+                while (!task.IsCompleted)
+                    yield return null;
+
+                if (task.Result.HasValue)
+                {
+                    SteamLobbyHelper.SetCurrentLobby(task.Result.Value);
+                    L.LogInfo("[Fallback] ✅ Lobby défini manuellement depuis ID.");
+                }
+                else
+                {
+                    L.LogWarning("[Fallback] ❌ JoinLobbyAsync a échoué avec l’ID connu.");
+                }
+            }
+        }
+
+
 
         #endregion
     }

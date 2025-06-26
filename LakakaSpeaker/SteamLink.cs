@@ -50,6 +50,8 @@ public class LobbyLogListener : MonoBehaviour
                 Lobby lobbyObj = lobbyOpt.Value;
 
                 SteamLobbyHelper.SetCurrentLobby(lobbyObj);
+                Debug.Log($"[LobbyLogListener] ✅ Lobby enregistré dans SteamLobbyHelper : {lobbyObj.Id.Value}");
+
                 Debug.Log($"[LobbyLogListener] CurrentLobby enregistré: {lobbyObj.Id.Value}");
             }
             else
@@ -80,12 +82,21 @@ public static class HostDetector
         return 0UL;
     }
 
-    public static bool IsLocalPlayerHost()
+    public static bool IsCurrentPlayerHost()
     {
-        ulong local = GetLocalSteamId();
-        ulong owner = GetLobbyOwnerSteamId();
-        return local != 0UL && owner != 0UL && local == owner;
+        var lobby = SteamLobbyHelper.CurrentLobby;
+
+        if (!lobby.HasValue)
+        {
+            LakakaSpeaker.LakakaSpeaker.Instance?.L.LogWarning("[HostDetector] CurrentLobby est NULL !");
+            return false;
+        }
+
+        LakakaSpeaker.LakakaSpeaker.Instance?.L.LogWarning($"[HostDetector] Owner = {lobby.Value.Owner.Id}, Local = {SteamClient.SteamId}");
+
+        return lobby.Value.Owner.Id == SteamClient.SteamId;
     }
+
 }
 
 public static class SteamLobbyHelper
